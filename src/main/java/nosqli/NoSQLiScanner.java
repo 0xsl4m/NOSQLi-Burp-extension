@@ -13,6 +13,13 @@ import burp.api.montoya.MontoyaApi;
  *  - Copy buttons fixed in Payload Cheatsheet
  *  - Findings table: double-click shows full request popup
  *  - Added Mongoose CVE-2025-23061 right-click option
+ *  - FP fixes: generic "mongo" terms removed from error signatures
+ *    (strict list for baseline-less contexts), auth keywords tightened,
+ *    non-2xx status change no longer reports auth bypass alone
+ *  - Operator injection now actually replaces the parameter NAME
+ *    (user[$ne]=x) instead of stuffing the pair into the value —
+ *    context-menu operator scan AND active-scan boolean stage
+ *  - Active scan: 150ms pause between requests
  */
 public class NoSQLiScanner implements BurpExtension {
 

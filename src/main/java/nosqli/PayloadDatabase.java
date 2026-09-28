@@ -52,11 +52,14 @@ public class PayloadDatabase {
     /**
      * MongoDB error signatures to look for in responses.
      * Case-insensitive.
+     *
+     * NOTE: only strings that indicate the DB itself errored belong here.
+     * Never add generic terms like "mongo"/"MongoDB" — every page of a
+     * MongoDB-backed site mentions them (X-Powered-By, tech-stack text, docs)
+     * and they would turn any such page into an injection finding.
      */
     public static final String[] MONGODB_ERROR_SIGNATURES = {
         "MongoError",
-        "mongo",
-        "MongoDB",
         "BSONTypeError",
         "BufioReader",
         "document failed validation",
@@ -77,6 +80,31 @@ public class PayloadDatabase {
         "MongooseError",
         "ValidationError",
         "OperationFailure"
+    };
+
+    /**
+     * Unambiguous subset of MONGODB_ERROR_SIGNATURES for contexts where there
+     * is NO baseline to compare against (passive audit, one-shot response
+     * checks). Generic JS/parser terms (SyntaxError, Overflow, "unexpected
+     * token", "failed to parse", "Cast to") are excluded here because normal
+     * pages can contain them outside any error context.
+     */
+    public static final String[] MONGODB_ERROR_SIGNATURES_STRICT = {
+        "MongoError",
+        "BSONTypeError",
+        "BufioReader",
+        "MongooseError",
+        "ScanObjectIdError",
+        "OperationFailure",
+        "BadValue",
+        "CastError",
+        "ObjectId failed",
+        "$where is not allowed",
+        "document failed validation",
+        "invalid operator",
+        "unknown operator",
+        "json: cannot unmarshal",
+        "ValidationError"
     };
 
     /**
@@ -525,15 +553,23 @@ public class PayloadDatabase {
     // AUTHENTICATION SUCCESS INDICATORS
     // ─────────────────────────────────────────────────────────────
 
+    /**
+     * Auth detection keywords. These are matched DIFFERENTIALLY (keyword must
+     * appear in one response and not the other), so they only need to be
+     * meaningful for auth state — but they must not be terms that appear
+     * asymmetrically for unrelated reasons (CSRF "token" meta tags, "session"
+     * cookies in one layout, the word "error"/"success" in any page copy).
+     * Keep them auth-specific; do not widen back to generic terms.
+     */
     public static final String[] AUTH_SUCCESS_KEYWORDS = {
-        "dashboard", "welcome", "logout", "profile", "account",
-        "success", "authenticated", "logged in", "session",
-        "token", "jwt", "bearer", "authorization"
+        "dashboard", "welcome", "logout", "log out", "sign out",
+        "logged in", "authenticated", "login successful",
+        "authentication successful", "my account"
     };
 
     public static final String[] AUTH_FAILURE_KEYWORDS = {
-        "invalid", "incorrect", "wrong", "failed", "error",
-        "unauthorized", "denied", "bad credentials", "try again"
+        "invalid", "incorrect", "wrong password", "bad credentials",
+        "authentication failed", "login failed", "unauthorized", "access denied"
     };
 
     // ─────────────────────────────────────────────────────────────

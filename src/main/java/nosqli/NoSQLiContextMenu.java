@@ -151,6 +151,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             // ── Detection Logic ───────────────────────────────────────
             boolean statusChanged   = (status != baselineStatus);
 
+            // A status change alone is bypass evidence only when the payload
+            // response is success-class (e.g. 401→200). Non-2xx differences
+            // (400/500 from error handling) must not report a CRITICAL bypass.
+            boolean statusBypass    = statusChanged && status >= 200 && status < 300;
+
             // Content-based: success keywords appeared OR failure keywords disappeared
             boolean successAppeared = containsAny(body, PayloadDatabase.AUTH_SUCCESS_KEYWORDS)
                                    && !containsAny(baselineBody, PayloadDatabase.AUTH_SUCCESS_KEYWORDS);
@@ -161,7 +166,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             boolean pathChanged     = !safeEquals(pathAfter, baselinePath)
                                    && isAuthSuccessPath(pathAfter);
 
-            boolean bypass = statusChanged || successAppeared || failureGone || pathChanged;
+            boolean bypass = statusBypass || successAppeared || failureGone || pathChanged;
 
             String evidence = String.format(
                 "status=%d (was %d) | path=%s (was %s) | content=%s",
@@ -199,7 +204,6 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     private void runOperatorScan(HttpRequestResponse baseRR) {
         flog.log("\n[OPERATOR SCAN] Starting → " + baseRR.request().url());
 
-        SmartBodyDetector.BodyType bodyType = SmartBodyDetector.detect(baseRR.request());
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
         if (params.isEmpty()) {
             flog.log("[OPERATOR SCAN] No injectable parameters found.");
@@ -216,9 +220,18 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         for (SmartBodyDetector.ParsedParam param : params) {
             flog.log("[OPERATOR SCAN] Testing parameter: " + param.name);
 
-            List<PayloadDatabase.BooleanPair> pairs = bodyType == SmartBodyDetector.BodyType.JSON
-                ? PayloadDatabase.getJsonBooleanPairs()
-                : PayloadDatabase.getUrlEncodedBooleanPairs(param.name);
+            List<PayloadDatabase.BooleanPair> pairs;
+            if (param.bodyType == SmartBodyDetector.BodyType.JSON ||
+                param.bodyType == SmartBodyDetector.BodyType.GRAPHQL) {
+                pairs = PayloadDatabase.getJsonBooleanPairs();
+            } else if (param.bodyType == SmartBodyDetector.BodyType.URL_ENCODED ||
+                       param.bodyType == SmartBodyDetector.BodyType.GET_PARAMS) {
+                pairs = PayloadDatabase.getUrlEncodedBooleanPairs(param.name);
+            } else {
+                flog.log("[OPERATOR SCAN] Skipping parameter: " + param.name +
+                    " (operator injection not applicable to " + param.bodyType + " bodies)");
+                continue;
+            }
 
             int hits = 0;
             String bestPayload = null;
@@ -226,8 +239,8 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             String bestEvidence = null;
 
             for (PayloadDatabase.BooleanPair pair : pairs) {
-                HttpRequest trueReq  = SmartBodyDetector.applyPayload(baseRR.request(), param, pair.truePayload);
-                HttpRequest falseReq = SmartBodyDetector.applyPayload(baseRR.request(), param, pair.falsePayload);
+                HttpRequest trueReq  = SmartBodyDetector.applyOperatorPayload(baseRR.request(), param, pair.truePayload);
+                HttpRequest falseReq = SmartBodyDetector.applyOperatorPayload(baseRR.request(), param, pair.falsePayload);
 
                 HttpRequestResponse trueRR  = api.http().sendRequest(trueReq);
                 HttpRequestResponse falseRR = api.http().sendRequest(falseReq);
@@ -318,7 +331,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 String trueBody = trueRR.response().bodyToString();
                 String truePath = extractPath(trueRR.response().headerValue("Location"));
 
-                boolean hasError  = containsAny(trueBody, PayloadDatabase.MONGODB_ERROR_SIGNATURES);
+                boolean hasError  = containsAny(trueBody, PayloadDatabase.MONGODB_ERROR_SIGNATURES_STRICT);
                 boolean sizeDiff  = isSignificantDiff(trueLen, falseLen);
                 boolean statusDiff = trueRR.response().statusCode() != falseRR.response().statusCode();
                 boolean pathDiff  = !safeEquals(truePath, baselinePath);
@@ -449,7 +462,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 String body     = rr.response().bodyToString();
                 String path     = extractPath(rr.response().headerValue("Location"));
 
-                boolean hasError    = containsAny(body, PayloadDatabase.MONGODB_ERROR_SIGNATURES);
+                boolean hasError    = containsAny(body, PayloadDatabase.MONGODB_ERROR_SIGNATURES_STRICT);
                 boolean statusDiff  = status != baselineStatus;
                 boolean sizeDiff    = isSignificantDiff(len, baselineLen);
                 boolean pathDiff    = !safeEquals(path, baselinePath) && isAuthSuccessPath(path);
@@ -506,7 +519,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             int    len      = rr.response().body().length();
             int    status   = rr.response().statusCode();
             boolean bigResp = len > baselineLen * 1.5;
-            boolean hasError = containsAny(rr.response().bodyToString(), PayloadDatabase.MONGODB_ERROR_SIGNATURES);
+            boolean hasError = containsAny(rr.response().bodyToString(), PayloadDatabase.MONGODB_ERROR_SIGNATURES_STRICT);
 
             String evidence = String.format("status=%d len=%d (baseline=%d) %s%s",
                 status, len, baselineLen,

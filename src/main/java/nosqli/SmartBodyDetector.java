@@ -284,9 +284,13 @@ public class SmartBodyDetector {
     // ─────────────────────────────────────────────────────────────
 
     /**
-     * Build a modified request with an operator injection payload.
-     * For URL-encoded: replaces "param=value" with "param[$ne]=xyz"
-     * For JSON: replaces "value" with {"$ne": "xyz"}
+     * Apply a VALUE-LEVEL payload: the given string replaces the parameter's
+     * value only — the parameter name stays the same. Used for error chars,
+     * JS injection and time-based payloads.
+     *
+     * NOT suitable for operator-injection payloads: those change the parameter
+     * NAME itself ("user[$ne]=x"), which cannot be expressed as a value
+     * replacement. Use {@link #applyOperatorPayload} for those.
      */
     public static HttpRequest applyPayload(HttpRequest originalRequest, ParsedParam param, String payloadValue) {
         switch (param.bodyType) {
@@ -302,11 +306,63 @@ public class SmartBodyDetector {
         }
     }
 
-    private static HttpRequest applyUrlEncodedPayload(HttpRequest request, ParsedParam param, String newValue) {
-        // newValue might be something like "[$ne]=impossible" or "[$gt]="
-        // We need to replace "paramName=oldValue" with the full new form
+    /**
+     * Apply an OPERATOR-INJECTION payload.
+     *
+     *  - URL-encoded / GET: the payload is a full "name=value" pair whose name
+     *    may differ from the original (e.g. "user[$ne]=x"), so the original
+     *    pair is REMOVED and the new one added — withUpdatedParameters cannot
+     *    do this because it only rewrites the value under the same name.
+     *  - JSON / GraphQL: the payload replaces the parameter's JSON value,
+     *    usually with an object (e.g. {"$ne": "x"}).
+     *
+     * For body types where operator pairs make no sense (multipart, raw), the
+     * original request is returned unchanged, so the true/false requests are
+     * identical and can never produce a differential finding.
+     */
+    public static HttpRequest applyOperatorPayload(HttpRequest originalRequest, ParsedParam param, String pairPayload) {
+        switch (param.bodyType) {
+            case URL_ENCODED:
+                return applyUrlEncodedPairPayload(originalRequest, param, pairPayload);
+            case GET_PARAMS:
+                return applyGetParamPairPayload(originalRequest, param, pairPayload);
+            case JSON:
+            case GRAPHQL:
+                return applyJsonPayload(originalRequest, param, pairPayload);
+            default:
+                return originalRequest;
+        }
+    }
+
+    private static HttpRequest applyUrlEncodedPairPayload(HttpRequest request, ParsedParam param, String pair) {
         try {
-            // Use Burp's built-in parameter replacement
+            int eq = pair.indexOf('=');
+            if (eq <= 0) return request;
+            HttpParameter newParam = HttpParameter.bodyParameter(pair.substring(0, eq), pair.substring(eq + 1));
+            return request
+                .withRemovedParameters(HttpParameter.bodyParameter(param.name, param.value))
+                .withAddedParameters(newParam);
+        } catch (Exception e) {
+            return request;
+        }
+    }
+
+    private static HttpRequest applyGetParamPairPayload(HttpRequest request, ParsedParam param, String pair) {
+        try {
+            int eq = pair.indexOf('=');
+            if (eq <= 0) return request;
+            HttpParameter newParam = HttpParameter.urlParameter(pair.substring(0, eq), pair.substring(eq + 1));
+            return request
+                .withRemovedParameters(HttpParameter.urlParameter(param.name, param.value))
+                .withAddedParameters(newParam);
+        } catch (Exception e) {
+            return request;
+        }
+    }
+
+    private static HttpRequest applyUrlEncodedPayload(HttpRequest request, ParsedParam param, String newValue) {
+        // VALUE-LEVEL: newValue replaces the value under the SAME parameter name.
+        try {
             return request.withUpdatedParameters(
                 HttpParameter.bodyParameter(param.name, newValue)
             );

@@ -1,8 +1,11 @@
-# 🔍 NoSQLi Hunter - Burp Suite Extension v2.0.0
+# 🔍 NoSQLi Hunter - Burp Suite Extension v2.1.0
 
 > **Professional-grade NoSQL Injection scanner for Burp Suite Community & Pro**
 > Built for bug hunters with 15+ years of web app experience in mind.
-> Zero false positives via triple-confirmation detection engine.
+> Detection engine designed to minimize false positives: error signatures are
+> checked against the baseline, blind-boolean findings require 2+ agreeing
+> payload pairs, and time-based findings require a second confirmation.
+> Always manually verify a finding before reporting it.
 
 ---
 
@@ -45,6 +48,23 @@ Error signatures must appear in the injected response but NOT in the baseline re
 - Must be ≥ 2.5× baseline average (3 samples)
 - Confirmed with a **second independent request** before reporting
 
+**Passive Audit:**
+Only unambiguous DB error signatures (`MongoError`, `BSONTypeError`,
+`CastError`, `MongooseError`, …) are matched. Generic terms that appear on any
+MongoDB-backed site — including the word "MongoDB" itself — are deliberately
+excluded, so describing your stack or sending an `X-Powered-By` header will not
+create a finding.
+
+### ⚠️ Scan Load Awareness
+
+One active-scan insertion point costs up to ~38 requests (11 error-based +
+12 boolean + ~15 time-based including baseline and confirmations), with a
+150 ms pause between requests. The time-based payloads, when they execute,
+burn ~3 s of server-side CPU per request. On targets with many parameters this
+is real load — scope your scans and respect the engagement's rate limits.
+The right-click **"🚀 Full NoSQL Injection Scan"** sends a comparable volume
+per parameter and is meant for a single hand-picked request.
+
 ---
 
 ## 🏗️ Project Structure
@@ -76,15 +96,15 @@ nosqli-hunter/
 ```bash
 cd nosqli-burp-extension
 gradle buildExtension
-# Output: build/libs/nosqli-hunter-2.0.0.jar
+# Output: build/libs/nosqli-hunter-2.1.0.jar
 ```
 
 ### Install in Burp
 1. Open Burp Suite
 2. Go to **Extensions → Installed → Add**
 3. Extension Type: **Java**
-4. Extension file: select `nosqli-hunter-2.0.0.jar`
-5. Click **Next** — look for "NoSQLi Hunter v2.0.0 - Loaded" in the Output tab
+4. Extension file: select `nosqli-hunter-2.1.0.jar`
+5. Click **Next** — look for "NoSQLi Hunter v2.1.0 - Loaded" in the Output tab
 
 ---
 

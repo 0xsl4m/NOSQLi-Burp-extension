@@ -26,6 +26,7 @@ public class NoSQLiScanCheck implements ScanCheck {
     private static final long   TIME_THRESHOLD_MS       = 2500;
     private static final int    TIME_CONFIRMATION_COUNT = 2;
     private static final double BOOLEAN_DIFF_THRESHOLD  = 0.15;
+    private static final long   REQUEST_DELAY_MS        = 150;
 
     public NoSQLiScanCheck(MontoyaApi api) {
         this.api  = api;
@@ -40,7 +41,6 @@ public class NoSQLiScanCheck implements ScanCheck {
 
         String baselineBody   = baseRR.response() != null ? baseRR.response().bodyToString() : "";
         int    baselineLen    = baseRR.response() != null ? baseRR.response().body().length() : 0;
-        int    baselineStatus = baseRR.response() != null ? baseRR.response().statusCode()   : 0;
         String baselinePath   = extractPath(baseRR.response() != null ? baseRR.response().headerValue("Location") : null);
 
         SmartBodyDetector.BodyType bodyType = SmartBodyDetector.detect(baseRR.request());
@@ -53,8 +53,7 @@ public class NoSQLiScanCheck implements ScanCheck {
         if (e != null) { issues.add(e); return auditResult(issues); }
 
         // Stage 2 — Boolean
-        AuditIssue b = runBooleanDetection(baseRR, insertionPoint, baselineLen, baselineStatus,
-                                            baselineBody, baselinePath, bodyType);
+        AuditIssue b = runBooleanDetection(baseRR, insertionPoint, baselineLen, baselinePath);
         if (b != null) { issues.add(b); return auditResult(issues); }
 
         // Stage 3 — Time
@@ -72,7 +71,9 @@ public class NoSQLiScanCheck implements ScanCheck {
         if (baseRR.response() == null) return auditResult(issues);
 
         String body = baseRR.response().bodyToString();
-        for (String sig : PayloadDatabase.MONGODB_ERROR_SIGNATURES) {
+        // No baseline here — use the strict signature list so ordinary pages
+        // that merely mention MongoDB terms don't become findings.
+        for (String sig : PayloadDatabase.MONGODB_ERROR_SIGNATURES_STRICT) {
             if (body.contains(sig)) {
                 flog.log("[PASSIVE] Error leakage found: " + sig + " in " + baseRR.request().url());
                 issues.add(auditIssue(
@@ -104,6 +105,7 @@ public class NoSQLiScanCheck implements ScanCheck {
             AuditInsertionPoint pt, String baselineBody, String baselinePath) {
 
         for (String c : PayloadDatabase.ERROR_DETECTION_CHARS) {
+            throttle();
             HttpRequest req = pt.buildHttpRequestWithPayload(
                 burp.api.montoya.core.ByteArray.byteArray(c.getBytes()));
             HttpRequestResponse rr = api.http().sendRequest(req.withService(baseRR.httpService()));
@@ -167,15 +169,34 @@ public class NoSQLiScanCheck implements ScanCheck {
     // ─── STAGE 2: BOOLEAN ────────────────────────────────────────
 
     private AuditIssue runBooleanDetection(HttpRequestResponse baseRR,
-            AuditInsertionPoint pt, int baselineLen, int baselineStatus,
-            String baselineBody, String baselinePath,
-            SmartBodyDetector.BodyType bodyType) {
+            AuditInsertionPoint pt, int baselineLen, String baselinePath) {
+
+        // Operator injection changes the parameter NAME (user[$ne]=x), but an
+        // AuditInsertionPoint only replaces the parameter VALUE and applies its
+        // own encoding — building the pair payloads through it would send
+        // "user=user%5B%24ne%5D..." and the operator never reaches the server.
+        // Locate the parameter in the original request and rewrite it instead.
+        SmartBodyDetector.ParsedParam target = findParam(baseRR.request(), pt.name());
+        if (target == null) {
+            flog.log("[NoSQLi] Boolean stage skipped: parameter '" + pt.name() +
+                     "' not found in original request");
+            return null;
+        }
+
+        if (target.bodyType != SmartBodyDetector.BodyType.JSON &&
+            target.bodyType != SmartBodyDetector.BodyType.GRAPHQL &&
+            target.bodyType != SmartBodyDetector.BodyType.URL_ENCODED &&
+            target.bodyType != SmartBodyDetector.BodyType.GET_PARAMS) {
+            flog.log("[NoSQLi] Boolean stage skipped: operator injection not applicable to " +
+                     target.bodyType + " bodies");
+            return null;
+        }
 
         List<PayloadDatabase.BooleanPair> pairs =
-            (bodyType == SmartBodyDetector.BodyType.JSON ||
-             bodyType == SmartBodyDetector.BodyType.GRAPHQL)
+            (target.bodyType == SmartBodyDetector.BodyType.JSON ||
+             target.bodyType == SmartBodyDetector.BodyType.GRAPHQL)
             ? PayloadDatabase.getJsonBooleanPairs()
-            : PayloadDatabase.getUrlEncodedBooleanPairs(pt.name());
+            : PayloadDatabase.getUrlEncodedBooleanPairs(target.name);
 
         int confirmed = 0;
         String bestDesc = null;
@@ -184,13 +205,14 @@ public class NoSQLiScanCheck implements ScanCheck {
         HttpRequest bestReq = null;
 
         for (PayloadDatabase.BooleanPair pair : pairs) {
-            HttpRequest trueReq = pt.buildHttpRequestWithPayload(
-                burp.api.montoya.core.ByteArray.byteArray(pair.truePayload.getBytes()));
-            HttpRequest falseReq = pt.buildHttpRequestWithPayload(
-                burp.api.montoya.core.ByteArray.byteArray(pair.falsePayload.getBytes()));
+            throttle();
+            HttpRequest trueReq = SmartBodyDetector.applyOperatorPayload(
+                baseRR.request(), target, pair.truePayload);
+            HttpRequest falseReq = SmartBodyDetector.applyOperatorPayload(
+                baseRR.request(), target, pair.falsePayload);
 
-            HttpRequestResponse trueRR  = api.http().sendRequest(trueReq.withService(baseRR.httpService()));
-            HttpRequestResponse falseRR = api.http().sendRequest(falseReq.withService(baseRR.httpService()));
+            HttpRequestResponse trueRR  = api.http().sendRequest(trueReq);
+            HttpRequestResponse falseRR = api.http().sendRequest(falseReq);
 
             if (trueRR.response() == null || falseRR.response() == null) continue;
 
@@ -257,6 +279,7 @@ public class NoSQLiScanCheck implements ScanCheck {
         long baseline = measureBaseline(baseRR.request(), baseRR.httpService(), 3);
 
         for (PayloadDatabase.TimedPayload tp : PayloadDatabase.getTimeBasedPayloads()) {
+            throttle();
             HttpRequest req = pt.buildHttpRequestWithPayload(
                 burp.api.montoya.core.ByteArray.byteArray(tp.payload.getBytes()))
                 .withService(baseRR.httpService());
@@ -269,6 +292,7 @@ public class NoSQLiScanCheck implements ScanCheck {
 
             int conf = 0;
             for (int i = 0; i < TIME_CONFIRMATION_COUNT; i++) {
+                throttle();
                 long cs = System.currentTimeMillis();
                 api.http().sendRequest(req);
                 long ce = System.currentTimeMillis() - cs;
@@ -306,11 +330,29 @@ public class NoSQLiScanCheck implements ScanCheck {
     private long measureBaseline(HttpRequest req, HttpService svc, int n) {
         long total = 0;
         for (int i = 0; i < n; i++) {
+            throttle();
             long s = System.currentTimeMillis();
             api.http().sendRequest(req.withService(svc));
             total += System.currentTimeMillis() - s;
         }
         return total / n;
+    }
+
+    /** Small pause between scan requests to stay WAF / rate-limit friendly. */
+    private void throttle() {
+        try {
+            Thread.sleep(REQUEST_DELAY_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Find a parameter of the original request by name (any body type). */
+    private SmartBodyDetector.ParsedParam findParam(HttpRequest request, String name) {
+        for (SmartBodyDetector.ParsedParam p : SmartBodyDetector.extractParams(request)) {
+            if (p.name.equals(name)) return p;
+        }
+        return null;
     }
 
     private boolean isSignificantDiff(int a, int b) {
