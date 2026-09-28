@@ -1,0 +1,55 @@
+plugins {
+    id 'java'
+}
+
+group = 'nosqli'
+version = '2.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Burp Suite Montoya API (latest 2026)
+    compileOnly 'net.portswigger.burp.extensions:montoya-api:2026.4'
+}
+
+// Build a fat JAR containing all dependencies
+jar {
+    archiveFileName = 'nosqli-hunter-' + version + '.jar'
+
+    manifest {
+        attributes(
+            'Main-Class': 'nosqli.NoSQLiScanner',
+            'Implementation-Title': 'NoSQLi Hunter',
+            'Implementation-Version': version
+        )
+    }
+
+    // Include runtime dependencies in the JAR
+    from {
+        configurations.runtimeClasspath.collect {
+            it.isDirectory() ? it : zipTree(it)
+        }
+    }
+
+    // Avoid duplicate META-INF entries
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// Task to build and show output location
+task buildExtension(dependsOn: jar) {
+    doLast {
+        println "\n╔═══════════════════════════════════════════════════╗"
+        println "║  NoSQLi Hunter built successfully!                ║"
+        println "║  JAR: build/libs/nosqli-hunter-${version}.jar     "
+        println "║  Load in Burp: Extender → Extensions → Add        ║"
+        println "║  Extension type: Java                              ║"
+        println "╚═══════════════════════════════════════════════════╝"
+    }
+}
