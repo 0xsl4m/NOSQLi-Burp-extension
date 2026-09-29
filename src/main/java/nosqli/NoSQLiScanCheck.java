@@ -225,9 +225,12 @@ public class NoSQLiScanCheck implements ScanCheck {
             boolean trueCloser  = Math.abs(tLen - baselineLen) <= Math.abs(fLen - baselineLen);
 
             // ── URL path change detection (auth redirect) ──
+            // Differential evidence must come from TRUE vs FALSE behavior only.
+            // Comparing either side against the baseline here reports a diff
+            // when both sides redirect identically away from the baseline.
             String truePath  = extractPath(trueRR.response().headerValue("Location"));
             String falsePath = extractPath(falseRR.response().headerValue("Location"));
-            boolean pathDiff = !safeEquals(truePath, falsePath) || !safeEquals(truePath, baselinePath);
+            boolean pathDiff = !safeEquals(truePath, falsePath);
 
             // ── Body content change ──
             boolean bodyChanged = isContentDifferent(

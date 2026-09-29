@@ -2,6 +2,9 @@
 .gradle/
 build/
 
+# Local-only docs (never commit, never push)
+ROADMAP.md
+
 # IDE
 .idea/
 *.iml
