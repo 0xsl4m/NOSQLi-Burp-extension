@@ -10,6 +10,12 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
+// Sources contain Arabic comments and non-ASCII strings — compile as UTF-8
+// regardless of the platform default.
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
 repositories {
     mavenCentral()
 }

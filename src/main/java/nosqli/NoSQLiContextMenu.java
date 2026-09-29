@@ -29,6 +29,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private static final long REQUEST_DELAY_MS = 150;
 
+    /** Set while runFullScan drives the individual techniques, so each one
+     *  skips its own summary and the full scan shows a single one at the end. */
+    private volatile boolean suppressSummaries = false;
+
     public NoSQLiContextMenu(MontoyaApi api) {
         this.api      = api;
         this.flog     = FindingsLogger.getInstance();
@@ -109,13 +113,14 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     // AUTH BYPASS
     // ─────────────────────────────────────────────────────────────
 
-    private void runAuthBypass(HttpRequestResponse baseRR, SmartBodyDetector.BodyType forceType) {
+    private int runAuthBypass(HttpRequestResponse baseRR, SmartBodyDetector.BodyType forceType) {
         flog.log("\n[AUTH BYPASS] Starting → " + baseRR.request().url());
+        int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
         if (params.isEmpty()) {
             flog.log("[AUTH BYPASS] No parameters found.");
-            return;
+            return 0;
         }
 
         String userField = guessField(params, "user","username","email","login","name","uname","uid");
@@ -264,6 +269,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 " | " + evidence + " | payload=" + truncate(payload, 60));
 
             if (bypass) {
+                findings++;
                 flog.reportFinding(new FindingsLogger.Finding(
                     "AUTH-BYPASS", "CRITICAL",
                     baseRR.request().url(),
@@ -274,23 +280,26 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     pathAfter
                 ));
                 api.siteMap().add(rr);
-                showNotification("NoSQLi Auth Bypass FOUND", baseRR.request().url(), payload, evidence);
             }
         }
         flog.log("[AUTH BYPASS] Completed.");
+        if (!suppressSummaries && findings > 0)
+            showScanSummary("Authentication Bypass", baseRR.request().url(), findings);
+        return findings;
     }
 
     // ─────────────────────────────────────────────────────────────
     // OPERATOR SCAN
     // ─────────────────────────────────────────────────────────────
 
-    private void runOperatorScan(HttpRequestResponse baseRR) {
+    private int runOperatorScan(HttpRequestResponse baseRR) {
         flog.log("\n[OPERATOR SCAN] Starting → " + baseRR.request().url());
+        int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
         if (params.isEmpty()) {
             flog.log("[OPERATOR SCAN] No injectable parameters found.");
-            return;
+            return 0;
         }
 
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
@@ -386,6 +395,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             }
 
             if (hits >= 2) {
+                findings++;
                 flog.log("[OPERATOR SCAN]  CONFIRMED injectable: " + param.name);
                 flog.reportFinding(new FindingsLogger.Finding(
                     "OPERATOR-INJECTION", "HIGH",
@@ -396,19 +406,21 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     bestEvidence + " | " + hits + " pairs confirmed",
                     null
                 ));
-                showNotification("NoSQLi Operator Injection in: " + param.name,
-                    baseRR.request().url(), bestPayload, bestEvidence);
             }
         }
         flog.log("[OPERATOR SCAN] Completed.");
+        if (!suppressSummaries && findings > 0)
+            showScanSummary("Operator Injection Scan", baseRR.request().url(), findings);
+        return findings;
     }
 
     // ─────────────────────────────────────────────────────────────
     // JS INJECTION
     // ─────────────────────────────────────────────────────────────
 
-    private void runJsScan(HttpRequestResponse baseRR) {
+    private int runJsScan(HttpRequestResponse baseRR) {
         flog.log("\n[JS INJECTION] Starting → " + baseRR.request().url());
+        int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
@@ -456,6 +468,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     pair.description + " | param=" + param.name + " | " + evidence);
 
                 if (found) {
+                    findings++;
                     flog.reportFinding(new FindingsLogger.Finding(
                         "JS-INJECTION", "HIGH",
                         baseRR.request().url(),
@@ -470,14 +483,18 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             }
         }
         flog.log("[JS INJECTION] Completed.");
+        if (!suppressSummaries && findings > 0)
+            showScanSummary("JavaScript Injection", baseRR.request().url(), findings);
+        return findings;
     }
 
     // ─────────────────────────────────────────────────────────────
     // TIME-BASED
     // ─────────────────────────────────────────────────────────────
 
-    private void runTimeScan(HttpRequestResponse baseRR) {
+    private int runTimeScan(HttpRequestResponse baseRR) {
         flog.log("\n[TIME-BASED] Starting → " + baseRR.request().url());
+        int findings = 0;
 
         long baselineTime = 0;
         for (int i = 0; i < 3; i++) {
@@ -523,6 +540,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                             "ms | confirmations=" + conf + "/2";
                         flog.log("[TIME-BASED]  CONFIRMED: " + param.name);
 
+                        findings++;
                         flog.reportFinding(new FindingsLogger.Finding(
                             "TIME-BASED", "HIGH",
                             baseRR.request().url(),
@@ -533,24 +551,26 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                             null
                         ));
                         api.siteMap().add(rr);
-                        showNotification("NoSQLi Time-Based CONFIRMED: " + param.name,
-                            baseRR.request().url(), tp.payload, evidence);
                     }
                 }
             }
         }
         flog.log("[TIME-BASED] Completed.");
+        if (!suppressSummaries && findings > 0)
+            showScanSummary("Time-Based Blind", baseRR.request().url(), findings);
+        return findings;
     }
 
     // ─────────────────────────────────────────────────────────────
     // CONTENT-TYPE CONFUSION
     // ─────────────────────────────────────────────────────────────
 
-    private void runContentTypeConfusion(HttpRequestResponse baseRR) {
+    private int runContentTypeConfusion(HttpRequestResponse baseRR) {
         flog.log("\n[CT CONFUSION] Starting → " + baseRR.request().url());
+        int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
-        if (params.isEmpty()) { flog.log("[CT CONFUSION] No params."); return; }
+        if (params.isEmpty()) { flog.log("[CT CONFUSION] No params."); return 0; }
 
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
         int    baselineStatus = baseline.response() != null ? baseline.response().statusCode() : 0;
@@ -597,6 +617,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     // A Content-Type flip changes response shape by itself, so
                     // weak signals are only a lead; a DB error corroborates.
                     String severity = hasError ? "HIGH" : "MEDIUM";
+                    findings++;
                     flog.reportFinding(new FindingsLogger.Finding(
                         "CT-CONFUSION", severity,
                         baseRR.request().url(),
@@ -611,14 +632,18 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             }
         }
         flog.log("[CT CONFUSION] Completed.");
+        if (!suppressSummaries && findings > 0)
+            showScanSummary("Content-Type Confusion", baseRR.request().url(), findings);
+        return findings;
     }
 
     // ─────────────────────────────────────────────────────────────
     // AGGREGATION PIPELINE
     // ─────────────────────────────────────────────────────────────
 
-    private void runAggregationScan(HttpRequestResponse baseRR) {
+    private int runAggregationScan(HttpRequestResponse baseRR) {
         flog.log("\n[AGGREGATION] Starting → " + baseRR.request().url());
+        int findings = 0;
 
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
         int baselineLen = baseline.response() != null ? baseline.response().body().length() : 0;
@@ -647,6 +672,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             if (bigResp || hasError) {
                 // Size drift alone is a lead; a DB error corroborates.
                 String severity = hasError ? "HIGH" : "MEDIUM";
+                findings++;
                 flog.reportFinding(new FindingsLogger.Finding(
                     "AGGREGATION", severity,
                     baseRR.request().url(),
@@ -660,14 +686,18 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             }
         }
         flog.log("[AGGREGATION] Completed.");
+        if (!suppressSummaries && findings > 0)
+            showScanSummary("Aggregation Pipeline Injection", baseRR.request().url(), findings);
+        return findings;
     }
 
     // ─────────────────────────────────────────────────────────────
     // MONGOOSE CVE-2025-23061
     // ─────────────────────────────────────────────────────────────
 
-    private void runMongooseBypass(HttpRequestResponse baseRR) {
+    private int runMongooseBypass(HttpRequestResponse baseRR) {
         flog.log("\n[MONGOOSE CVE] Starting → " + baseRR.request().url());
+        int findings = 0;
 
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
         int    baselineStatus = baseline.response() != null ? baseline.response().statusCode() : 0;
@@ -733,6 +763,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 " | " + evidence + " | " + truncate(payload, 60));
 
             if (bypass) {
+                findings++;
                 flog.reportFinding(new FindingsLogger.Finding(
                     "MONGOOSE-CVE-2025-23061", "CRITICAL",
                     baseRR.request().url(),
@@ -743,11 +774,12 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     path
                 ));
                 api.siteMap().add(rr);
-                showNotification("Mongoose CVE-2025-23061 BYPASS FOUND",
-                    baseRR.request().url(), payload, evidence);
             }
         }
         flog.log("[MONGOOSE CVE] Completed.");
+        if (!suppressSummaries && findings > 0)
+            showScanSummary("Mongoose CVE-2025-23061", baseRR.request().url(), findings);
+        return findings;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -756,14 +788,19 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private void runFullScan(HttpRequestResponse baseRR) {
         flog.log("\n[FULL SCAN] Starting all techniques → " + baseRR.request().url());
-        runAuthBypass(baseRR, SmartBodyDetector.detect(baseRR.request()));
-        runOperatorScan(baseRR);
-        runJsScan(baseRR);
-        runContentTypeConfusion(baseRR);
-        runAggregationScan(baseRR);
-        runMongooseBypass(baseRR);
-        runTimeScan(baseRR); // last (slowest)
+        suppressSummaries = true;
+        int total = 0;
+        total += runAuthBypass(baseRR, SmartBodyDetector.detect(baseRR.request()));
+        total += runOperatorScan(baseRR);
+        total += runJsScan(baseRR);
+        total += runContentTypeConfusion(baseRR);
+        total += runAggregationScan(baseRR);
+        total += runMongooseBypass(baseRR);
+        total += runTimeScan(baseRR); // last (slowest)
+        suppressSummaries = false;
         flog.log("[FULL SCAN] All techniques completed.");
+        if (total > 0)
+            showScanSummary("Full Scan (all techniques)", baseRR.request().url(), total);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -942,27 +979,26 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         return text.length() > 160 ? "…" + text.substring(text.length() - 160) : text;
     }
 
-    private void showNotification(String title, String url, String payload, String evidence) {
+    /**
+     * One NON-MODAL end-of-scan summary instead of a modal dialog per
+     * finding — a Full Scan used to stack blocking popups on the screen.
+     */
+    private void showScanSummary(String technique, String url, int findings) {
         SwingUtilities.invokeLater(() -> {
-            // Plain JTextArea in a scroll pane: HTML labels render as literal
-            // markup inside Burp, and long URLs/payloads must wrap instead of
-            // stretching the dialog to infinity.
+            JDialog dialog = new JDialog((Frame) null, "NoSQLi Hunter — Scan Complete", false);
             JTextArea area = new JTextArea();
             area.setEditable(false);
             area.setLineWrap(true);
             area.setWrapStyleWord(true);
-            area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 14));
-            area.setText(title + "\n\n"
-                + "URL:      " + url + "\n\n"
-                + "Payload:  " + truncate(payload, 200) + "\n\n"
-                + "Evidence: " + truncate(evidence, 200));
-            area.setCaretPosition(0);
-
-            JScrollPane scroll = new JScrollPane(area);
-            scroll.setPreferredSize(new Dimension(720, 280));
-
-            JOptionPane.showMessageDialog(null, scroll,
-                "NoSQLi Hunter — Finding", JOptionPane.WARNING_MESSAGE);
+            area.setFont(area.getFont().deriveFont(Font.PLAIN, 14f));
+            area.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+            area.setText(technique + " finished on:\n" + url
+                + "\n\nFindings: " + findings
+                + (findings > 0 ? "\nOpen the NoSQLi Hunter tab for details and full requests." : ""));
+            dialog.setContentPane(area);
+            dialog.setSize(560, 220);
+            dialog.setLocationRelativeTo(null);
+            dialog.setVisible(true);
         });
     }
 }
