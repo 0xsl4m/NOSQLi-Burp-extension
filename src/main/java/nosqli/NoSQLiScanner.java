@@ -41,8 +41,17 @@ public class NoSQLiScanner implements BurpExtension {
         // 4. Context menu (right-click)
         api.userInterface().registerContextMenuItemsProvider(new NoSQLiContextMenu(api));
 
-        // 5. Active scanner check
-        api.scanner().registerScanCheck(new NoSQLiScanCheck(api));
+        // 5. Active/passive scanner check — the Scanner API is
+        //    "[Professional only]". Guard it so Burp Community loads the
+        //    extension cleanly: the tab and right-click scans work everywhere.
+        try {
+            api.scanner().registerScanCheck(new NoSQLiScanCheck(api));
+        } catch (Exception e) {
+            FindingsLogger.getInstance().log("Scanner check not registered (" +
+                     e.getClass().getSimpleName() +
+                     "): active/passive auditing requires Burp Suite Professional. " +
+                     "Right-click scans and the NoSQLi Hunter tab work on Community.");
+        }
 
         // 6. Banner
         FindingsLogger flog = FindingsLogger.getInstance();

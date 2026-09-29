@@ -106,6 +106,11 @@ gradle buildExtension
 4. Extension file: select `nosqli-hunter-2.1.0.jar`
 5. Click **Next** — look for "NoSQLi Hunter v2.1.0 - Loaded" in the Output tab
 
+> **Burp Community users:** the right-click attack menu and the NoSQLi Hunter
+> tab work fully on Community. Only the automated active/passive auditing
+> needs Burp Pro — on Community the extension loads normally, logs a notice,
+> and skips scanner registration.
+
 ---
 
 ## 🚀 Usage
