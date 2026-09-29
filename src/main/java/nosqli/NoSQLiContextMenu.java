@@ -501,20 +501,26 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 HttpRequestResponse rr = api.http().sendRequest(injected);
                 long elapsed = System.currentTimeMillis() - s;
 
-                boolean delayed = elapsed >= 2500 && elapsed >= baselineTime * 2.0;
+                // Same thresholds as the scanner's time stage (parity).
+                boolean delayed = elapsed >= 2500 && elapsed >= baselineTime * 2.5;
 
                 flog.log("[TIME-BASED]   " + param.name + " | " + tp.description +
                     " | elapsed=" + elapsed + "ms baseline=" + baselineTime + "ms | " +
                     (delayed ? "  DELAYED!" : "Normal"));
 
                 if (delayed) {
-                    long cs = System.currentTimeMillis();
-                    api.http().sendRequest(injected);
-                    long confirmElapsed = System.currentTimeMillis() - cs;
+                    int conf = 0;
+                    for (int i = 0; i < 2; i++) {
+                        throttle();
+                        long cs = System.currentTimeMillis();
+                        api.http().sendRequest(injected);
+                        long ce = System.currentTimeMillis() - cs;
+                        if (ce >= 2500 && ce >= baselineTime * 2.5) conf++;
+                    }
 
-                    if (confirmElapsed >= 2500) {
+                    if (conf >= 1) {
                         String evidence = "Baseline=" + baselineTime + "ms | 1st=" + elapsed +
-                            "ms | 2nd=" + confirmElapsed + "ms";
+                            "ms | confirmations=" + conf + "/2";
                         flog.log("[TIME-BASED]  CONFIRMED: " + param.name);
 
                         flog.reportFinding(new FindingsLogger.Finding(
