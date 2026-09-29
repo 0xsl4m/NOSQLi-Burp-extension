@@ -26,6 +26,12 @@ public final class DiffEngine {
         + "ts|timestamp|request[_-]?id|session_state|viewstate)[\\w.\\-]*\\s*[=:]\\s*)"
         + "(\"[^\"]{6,}\"|[A-Za-z0-9+/=_\\-]{6,})");
 
+    /** HTML form style: <input name='csrf_token' ... value='...'> */
+    private static final Pattern DYNAMIC_HTML_FIELD = Pattern.compile(
+        "(?i)((?:name|id)\\s*=\\s*[\"']?(?:csrf[-_a-z]*|_?token|authenticity_token|"
+        + "xsrf[-_a-z]*|nonce|viewstate)[\\w.\\-]*[\"']?[^>]{0,80}?value\\s*=\\s*[\"']?)"
+        + "([A-Za-z0-9+/=_\\-]{6,})");
+
     /** 13-digit epoch-milliseconds timestamps. */
     private static final Pattern EPOCH_MS = Pattern.compile("\\b1[3-9]\\d{11}\\b");
 
@@ -41,6 +47,7 @@ public final class DiffEngine {
             String enc = urlEncode(injectedValue);
             if (!enc.equals(injectedValue)) out = out.replace(enc, "");
         }
+        out = DYNAMIC_HTML_FIELD.matcher(out).replaceAll("$1MASKED");
         out = DYNAMIC_FIELD.matcher(out).replaceAll("$1MASKED");
         out = EPOCH_MS.matcher(out).replaceAll("MASKED");
         return out;
