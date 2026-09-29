@@ -56,7 +56,7 @@ public class NoSQLiScanner implements BurpExtension {
         // 6. Banner
         FindingsLogger flog = FindingsLogger.getInstance();
         flog.log("==============================================");
-        flog.log(" NoSQLi Hunter v" + VERSION + " — Loaded ✅");
+        flog.log(" NoSQLi Hunter v" + VERSION + " — Loaded ");
         flog.log(" Auth Detection : Content + URL Path (not just status)");
         flog.log(" Findings       : Full HTTP request per finding");
         flog.log(" CVE Coverage   : CVE-2025-23061 Mongoose $where/$or");

@@ -117,7 +117,7 @@ public class NoSQLiScanCheck implements ScanCheck {
                 if (body.toLowerCase().contains(sig.toLowerCase()) &&
                     !baselineBody.toLowerCase().contains(sig.toLowerCase())) {
 
-                    flog.log("[NoSQLi] ✅ ERROR-BASED: param=" + pt.name() + " payload=" + c + " sig=" + sig);
+                    flog.log("[NoSQLi]  ERROR-BASED: param=" + pt.name() + " payload=" + c + " sig=" + sig);
 
                     // Report to FindingsLogger with full request
                     flog.reportFinding(new FindingsLogger.Finding(
@@ -142,7 +142,7 @@ public class NoSQLiScanCheck implements ScanCheck {
                 if (body.toLowerCase().contains(sig.toLowerCase()) &&
                     !baselineBody.toLowerCase().contains(sig.toLowerCase())) {
 
-                    flog.log("[NoSQLi] ✅ COUCHDB ERROR: param=" + pt.name() + " sig=" + sig);
+                    flog.log("[NoSQLi]  COUCHDB ERROR: param=" + pt.name() + " sig=" + sig);
 
                     flog.reportFinding(new FindingsLogger.Finding(
                         "COUCHDB-ERROR", "HIGH",
@@ -252,7 +252,7 @@ public class NoSQLiScanCheck implements ScanCheck {
 
         String evidence = buildBooleanEvidence(trueEv, falseEv, baselineLen, baselinePath);
 
-        flog.log("[NoSQLi] ✅ BOOLEAN-BASED: param=" + pt.name() + " (" + confirmed + " pairs)");
+        flog.log("[NoSQLi]  BOOLEAN-BASED: param=" + pt.name() + " (" + confirmed + " pairs)");
         flog.reportFinding(new FindingsLogger.Finding(
             "BLIND-BOOLEAN", "HIGH",
             baseRR.request().url(),
@@ -300,7 +300,7 @@ public class NoSQLiScanCheck implements ScanCheck {
             }
 
             if (conf >= 1) {
-                flog.log("[NoSQLi] ✅ TIME-BASED: param=" + pt.name() +
+                flog.log("[NoSQLi]  TIME-BASED: param=" + pt.name() +
                     " elapsed=" + elapsed + "ms baseline=" + baseline + "ms");
 
                 flog.reportFinding(new FindingsLogger.Finding(

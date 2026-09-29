@@ -92,7 +92,7 @@ public class FindingsLogger {
         findings.add(f);
 
         // أيضاً نكتبه في اللوج العادي
-        log("✅ [" + f.technique + "/" + f.severity + "] param=" + f.parameter +
+        log(" [" + f.technique + "/" + f.severity + "] param=" + f.parameter +
             " url=" + f.url +
             (f.urlPath != null && !f.urlPath.isEmpty() ? " → redirect=" + f.urlPath : "") +
             " | evidence=" + f.evidence);

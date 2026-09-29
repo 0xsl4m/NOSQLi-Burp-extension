@@ -46,16 +46,16 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         if (selectedRRs == null || selectedRRs.isEmpty()) return items;
         HttpRequestResponse selectedRR = selectedRRs.get(0);
 
-        JMenu mainMenu = new JMenu("🔍 NoSQLi Hunter");
+        JMenu mainMenu = new JMenu("NoSQLi Hunter");
 
         SmartBodyDetector.BodyType bodyType = SmartBodyDetector.detect(selectedRR.request());
-        JMenuItem bodyTypeInfo = new JMenuItem("📋 Body Type: " + bodyType.name());
+        JMenuItem bodyTypeInfo = new JMenuItem("Body Type: " + bodyType.name());
         bodyTypeInfo.setEnabled(false);
         mainMenu.add(bodyTypeInfo);
         mainMenu.addSeparator();
 
         // Auth Bypass
-        JMenu authMenu = new JMenu("🔓 Authentication Bypass");
+        JMenu authMenu = new JMenu("Authentication Bypass");
         JMenuItem authUrl = new JMenuItem("URL-Encoded ($ne, $gt, $regex, $nin, $in, $exists)");
         authUrl.addActionListener(e -> executor.submit(() -> runAuthBypass(selectedRR, SmartBodyDetector.BodyType.URL_ENCODED)));
         JMenuItem authJson = new JMenuItem("JSON Operator Bypass");
@@ -65,39 +65,39 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         mainMenu.add(authMenu);
 
         // Operator Scan
-        JMenuItem operatorScan = new JMenuItem("⚙️ Operator Injection Scan");
+        JMenuItem operatorScan = new JMenuItem("Operator Injection Scan");
         operatorScan.addActionListener(e -> executor.submit(() -> runOperatorScan(selectedRR)));
         mainMenu.add(operatorScan);
 
         // JS Injection
-        JMenuItem jsScan = new JMenuItem("💻 JavaScript Injection ($where)");
+        JMenuItem jsScan = new JMenuItem("JavaScript Injection ($where)");
         jsScan.addActionListener(e -> executor.submit(() -> runJsScan(selectedRR)));
         mainMenu.add(jsScan);
 
         // Time-Based
-        JMenuItem timeScan = new JMenuItem("⏱️ Time-Based Blind (3s delay)");
+        JMenuItem timeScan = new JMenuItem("Time-Based Blind (3s delay)");
         timeScan.addActionListener(e -> executor.submit(() -> runTimeScan(selectedRR)));
         mainMenu.add(timeScan);
 
         // Content-Type Confusion
-        JMenuItem ctConfusion = new JMenuItem("🔄 Content-Type Confusion (→ JSON ops)");
+        JMenuItem ctConfusion = new JMenuItem("Content-Type Confusion (→ JSON ops)");
         ctConfusion.addActionListener(e -> executor.submit(() -> runContentTypeConfusion(selectedRR)));
         mainMenu.add(ctConfusion);
 
         // Aggregation Pipeline
-        JMenuItem aggScan = new JMenuItem("🗄️ Aggregation Pipeline Injection");
+        JMenuItem aggScan = new JMenuItem("Aggregation Pipeline Injection");
         aggScan.addActionListener(e -> executor.submit(() -> runAggregationScan(selectedRR)));
         mainMenu.add(aggScan);
 
         // Mongoose CVE
-        JMenuItem mongoose = new JMenuItem("🦦 Mongoose CVE-2025-23061 ($where via $or)");
+        JMenuItem mongoose = new JMenuItem("Mongoose CVE-2025-23061 ($where via $or)");
         mongoose.addActionListener(e -> executor.submit(() -> runMongooseBypass(selectedRR)));
         mainMenu.add(mongoose);
 
         mainMenu.addSeparator();
 
         // Full Scan
-        JMenuItem fullScan = new JMenuItem("🚀 Full NoSQL Injection Scan (All Techniques)");
+        JMenuItem fullScan = new JMenuItem("Full NoSQL Injection Scan (All Techniques)");
         fullScan.addActionListener(e -> executor.submit(() -> runFullScan(selectedRR)));
         mainMenu.add(fullScan);
 
@@ -225,7 +225,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
             if (errorLead && !errorLeadReported) {
                 errorLeadReported = true;
-                flog.log("[AUTH BYPASS] ⚠️  Error " + status + " on operator payload — operators likely " +
+                flog.log("[AUTH BYPASS]   Error " + status + " on operator payload — operators likely " +
                     "reached the query. Reported as MEDIUM lead: " + truncate(payload, 60));
                 flog.reportFinding(new FindingsLogger.Finding(
                     "OPERATOR-ERROR", "MEDIUM",
@@ -238,7 +238,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     null
                 ));
             } else if (!bypass && status >= 500) {
-                flog.log("[AUTH BYPASS] ⚠️  Server error (" + status + ") on operator payload — " +
+                flog.log("[AUTH BYPASS]   Server error (" + status + ") on operator payload — " +
                     "interesting, NOT a bypass (lead already reported): " + truncate(payload, 60));
             }
 
@@ -251,7 +251,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     failureGone ? "FAILURE keywords disappeared" : "no change"
             );
 
-            flog.log("[AUTH BYPASS] " + (bypass ? "✅ BYPASS!" : "❌ No bypass") +
+            flog.log("[AUTH BYPASS] " + (bypass ? " BYPASS!" : " No bypass") +
                 " | " + evidence + " | payload=" + truncate(payload, 60));
 
             if (bypass) {
@@ -344,7 +344,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 boolean diff = sizeDiff || statusDiff || pathDiff || bodyDiff;
 
                 flog.log("[OPERATOR SCAN]   " + param.name + " | " + pair.description +
-                    " | " + evidence + " | " + (diff ? "⚠️ DIFFERENT" : "Same"));
+                    " | " + evidence + " | " + (diff ? " DIFFERENT" : "Same"));
 
                 if (diff) {
                     hits++;
@@ -358,7 +358,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             }
 
             if (hits >= 2) {
-                flog.log("[OPERATOR SCAN] ✅ CONFIRMED injectable: " + param.name);
+                flog.log("[OPERATOR SCAN]  CONFIRMED injectable: " + param.name);
                 flog.reportFinding(new FindingsLogger.Finding(
                     "OPERATOR-INJECTION", "HIGH",
                     baseRR.request().url(),
@@ -424,7 +424,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     hasError ? " [DB ERROR]" : ""
                 );
 
-                flog.log("[JS INJECTION] " + (found ? "⚠️  " : "   ") +
+                flog.log("[JS INJECTION] " + (found ? "  " : "   ") +
                     pair.description + " | param=" + param.name + " | " + evidence);
 
                 if (found) {
@@ -477,7 +477,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
                 flog.log("[TIME-BASED]   " + param.name + " | " + tp.description +
                     " | elapsed=" + elapsed + "ms baseline=" + baselineTime + "ms | " +
-                    (delayed ? "⚠️  DELAYED!" : "Normal"));
+                    (delayed ? "  DELAYED!" : "Normal"));
 
                 if (delayed) {
                     long cs = System.currentTimeMillis();
@@ -487,7 +487,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     if (confirmElapsed >= 2500) {
                         String evidence = "Baseline=" + baselineTime + "ms | 1st=" + elapsed +
                             "ms | 2nd=" + confirmElapsed + "ms";
-                        flog.log("[TIME-BASED] ✅ CONFIRMED: " + param.name);
+                        flog.log("[TIME-BASED]  CONFIRMED: " + param.name);
 
                         flog.reportFinding(new FindingsLogger.Finding(
                             "TIME-BASED", "HIGH",
@@ -557,7 +557,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
                 flog.log("[CT CONFUSION]   " + param.name + " | " +
                     truncate(jsonPayload, 50) + " | " + evidence +
-                    (interesting ? " ⚠️  INTERESTING!" : ""));
+                    (interesting ? "   INTERESTING!" : ""));
 
                 if (interesting) {
                     flog.reportFinding(new FindingsLogger.Finding(
@@ -670,7 +670,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
             if (errorLead && !errorLeadReported) {
                 errorLeadReported = true;
-                flog.log("[MONGOOSE CVE] ⚠️  Error " + status + " on $where payload — reported as MEDIUM lead");
+                flog.log("[MONGOOSE CVE]   Error " + status + " on $where payload — reported as MEDIUM lead");
                 flog.reportFinding(new FindingsLogger.Finding(
                     "OPERATOR-ERROR", "MEDIUM",
                     baseRR.request().url(),
@@ -690,7 +690,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 successFound ? "SUCCESS appeared" : failureGone ? "FAILURE gone" : "unchanged"
             );
 
-            flog.log("[MONGOOSE CVE] " + (bypass ? "✅ BYPASS!" : "❌ No bypass") +
+            flog.log("[MONGOOSE CVE] " + (bypass ? " BYPASS!" : " No bypass") +
                 " | " + evidence + " | " + truncate(payload, 60));
 
             if (bypass) {
@@ -837,7 +837,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             scroll.setPreferredSize(new Dimension(720, 280));
 
             JOptionPane.showMessageDialog(null, scroll,
-                "⚠️ NoSQLi Hunter — Finding", JOptionPane.WARNING_MESSAGE);
+                "NoSQLi Hunter — Finding", JOptionPane.WARNING_MESSAGE);
         });
     }
 }
