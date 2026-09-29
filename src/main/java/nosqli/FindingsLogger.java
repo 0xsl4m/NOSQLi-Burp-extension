@@ -60,6 +60,7 @@ public class FindingsLogger {
     private final List<Finding> findings = new CopyOnWriteArrayList<>();
     private final List<Consumer<Finding>> listeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<String>>  logListeners = new CopyOnWriteArrayList<>();
+    private final java.util.Set<String> seenKeys = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private Logging burpLog;
 
     // ── Setup ───────────────────────────────────────────────────────
@@ -88,7 +89,17 @@ public class FindingsLogger {
     }
 
     // ── Report Finding ──────────────────────────────────────────────
-    public void reportFinding(Finding f) {
+    /**
+     * Duplicates (same technique + parameter + URL) are suppressed: repeated
+     * scans of the same endpoint must not pile up identical findings.
+     * Clear Findings resets the dedup set.
+     */
+    public boolean reportFinding(Finding f) {
+        String key = f.technique + "|" + f.parameter + "|" + f.url;
+        if (!seenKeys.add(key)) {
+            log("Duplicate suppressed: " + f.technique + " on " + f.parameter + " (" + f.url + ")");
+            return false;
+        }
         findings.add(f);
 
         // أيضاً نكتبه في اللوج العادي
@@ -101,6 +112,7 @@ public class FindingsLogger {
         for (Consumer<Finding> l : listeners) {
             SwingUtilities.invokeLater(() -> l.accept(f));
         }
+        return true;
     }
 
     public List<Finding> getFindings() {
@@ -109,5 +121,6 @@ public class FindingsLogger {
 
     public void clearFindings() {
         findings.clear();
+        seenKeys.clear();
     }
 }

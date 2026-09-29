@@ -477,28 +477,128 @@ public class NoSQLiTab {
     }
 
     private void exportFindings() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("NoSQLi Hunter — Findings Export\n");
-        sb.append("Generated: ").append(java.time.LocalDateTime.now()).append("\n\n");
+        java.util.List<FindingsLogger.Finding> all = FindingsLogger.getInstance().getFindings();
+        if (all.isEmpty()) { showInfo("No findings to export."); return; }
 
-        for (FindingsLogger.Finding f : FindingsLogger.getInstance().getFindings()) {
-            sb.append("════════════════════════════════\n");
-            sb.append("Time:      ").append(f.timestamp).append("\n");
-            sb.append("Technique: ").append(f.technique).append("\n");
-            sb.append("Severity:  ").append(f.severity).append("\n");
-            sb.append("URL:       ").append(f.url).append("\n");
-            sb.append("Parameter: ").append(f.parameter).append("\n");
-            sb.append("Payload:   ").append(f.payload).append("\n");
-            sb.append("Evidence:  ").append(f.evidence).append("\n");
-            if (f.urlPath != null && !f.urlPath.isEmpty())
-                sb.append("Redirect:  ").append(f.urlPath).append("\n");
-            sb.append("\n--- FULL HTTP REQUEST ---\n");
-            sb.append(f.fullRequest).append("\n\n");
+        javax.swing.JFileChooser chooser = new javax.swing.JFileChooser();
+        chooser.setSelectedFile(new java.io.File("nosqli-findings.json"));
+        chooser.setDialogTitle("Export Findings (.json / .csv / .html)");
+        if (chooser.showSaveDialog(mainPanel) != javax.swing.JFileChooser.APPROVE_OPTION) return;
+
+        java.io.File file = chooser.getSelectedFile();
+        String name = file.getName().toLowerCase();
+        String format = name.endsWith(".csv") ? "csv"
+                      : (name.endsWith(".html") || name.endsWith(".htm")) ? "html"
+                      : (name.endsWith(".json") ? "json" : null);
+        if (format == null) {
+            format = "json";
+            file = new java.io.File(file.getParentFile(), file.getName() + ".json");
         }
 
-        copyToClipboard(sb.toString());
-        showInfo("Findings exported to clipboard (" +
-            FindingsLogger.getInstance().getFindings().size() + " findings)");
+        String content;
+        try {
+            switch (format) {
+                case "csv":  content = findingsCsv(all);  break;
+                case "html": content = findingsHtml(all); break;
+                default:     content = findingsJson(all); break;
+            }
+            try (java.io.Writer w = new java.io.OutputStreamWriter(
+                    new java.io.FileOutputStream(file), java.nio.charset.StandardCharsets.UTF_8)) {
+                w.write(content);
+            }
+        } catch (Exception ex) {
+            showInfo("Export failed: " + ex.getMessage());
+            return;
+        }
+        showInfo("Exported " + all.size() + " findings (" + format + ") to:\n" + file.getAbsolutePath());
+    }
+
+    private String csvField(String s) {
+        if (s == null) return "";
+        return "\"" + s.replace("\"", "\"\"") + "\"";
+    }
+
+    private String findingsCsv(java.util.List<FindingsLogger.Finding> all) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Time,Technique,Severity,URL,Parameter,Payload,Evidence,Redirect,FullRequest\n");
+        for (FindingsLogger.Finding f : all) {
+            sb.append(String.join(",",
+                csvField(f.timestamp), csvField(f.technique), csvField(f.severity),
+                csvField(f.url), csvField(f.parameter), csvField(f.payload),
+                csvField(f.evidence), csvField(f.urlPath), csvField(f.fullRequest)));
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+
+    private String jsonEscape(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder("\"");
+        for (char c : s.toCharArray()) {
+            switch (c) {
+                case '"'  -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+                    else sb.append(c);
+                }
+            }
+        }
+        return sb.append('"').toString();
+    }
+
+    private String findingsJson(java.util.List<FindingsLogger.Finding> all) {
+        StringBuilder sb = new StringBuilder("[\n");
+        for (int i = 0; i < all.size(); i++) {
+            FindingsLogger.Finding f = all.get(i);
+            sb.append("  {\n")
+              .append("    \"time\": ").append(jsonEscape(f.timestamp)).append(",\n")
+              .append("    \"technique\": ").append(jsonEscape(f.technique)).append(",\n")
+              .append("    \"severity\": ").append(jsonEscape(f.severity)).append(",\n")
+              .append("    \"url\": ").append(jsonEscape(f.url)).append(",\n")
+              .append("    \"parameter\": ").append(jsonEscape(f.parameter)).append(",\n")
+              .append("    \"payload\": ").append(jsonEscape(f.payload)).append(",\n")
+              .append("    \"evidence\": ").append(jsonEscape(f.evidence)).append(",\n")
+              .append("    \"redirect\": ").append(jsonEscape(f.urlPath)).append(",\n")
+              .append("    \"fullRequest\": ").append(jsonEscape(f.fullRequest)).append("\n")
+              .append("  }").append(i < all.size() - 1 ? "," : "").append("\n");
+        }
+        return sb.append("]\n").toString();
+    }
+
+    private String htmlEscape(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    private String findingsHtml(java.util.List<FindingsLogger.Finding> all) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
+          .append("<title>NoSQLi Hunter Findings</title><style>")
+          .append("body{font-family:sans-serif;margin:20px}table{border-collapse:collapse;width:100%}")
+          .append("th,td{border:1px solid #999;padding:6px;text-align:left;vertical-align:top;font-size:13px}")
+          .append("th{background:#2b2b2b;color:#fff}.CRITICAL{color:#c33;font-weight:bold}.HIGH{color:#c80}.MEDIUM{color:#a70}")
+          .append("pre{white-space:pre-wrap;background:#f5f5f5;padding:6px;max-width:600px}")
+          .append("</style></head><body><h1>NoSQLi Hunter — Findings</h1>")
+          .append("<p>Generated: ").append(htmlEscape(java.time.LocalDateTime.now().toString())).append("</p>")
+          .append("<table><tr><th>#</th><th>Time</th><th>Technique</th><th>Severity</th>")
+          .append("<th>URL</th><th>Parameter</th><th>Payload</th><th>Evidence</th><th>Request</th></tr>");
+        int i = 1;
+        for (FindingsLogger.Finding f : all) {
+            sb.append("<tr><td>").append(i++).append("</td><td>").append(htmlEscape(f.timestamp))
+              .append("</td><td>").append(htmlEscape(f.technique))
+              .append("</td><td class='").append(htmlEscape(f.severity)).append("'>").append(htmlEscape(f.severity))
+              .append("</td><td>").append(htmlEscape(f.url))
+              .append("</td><td>").append(htmlEscape(f.parameter))
+              .append("</td><td><code>").append(htmlEscape(f.payload)).append("</code>")
+              .append("</td><td>").append(htmlEscape(f.evidence))
+              .append("</td><td><pre>").append(htmlEscape(f.fullRequest)).append("</pre></td></tr>");
+        }
+        sb.append("</table></body></html>\n");
+        return sb.toString();
     }
 
     private String truncate(String s, int max) {
