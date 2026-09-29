@@ -173,6 +173,8 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             flog.log("[AUTH BYPASS] Failure baseline: status=" + baselineStatus);
         }
 
+        boolean errorLeadReported = false;
+
         for (String payload : payloads) {
             throttle();
             HttpRequest modified = forceType == SmartBodyDetector.BodyType.JSON
@@ -214,10 +216,30 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             boolean bypass = status < 400 &&
                 (statusBypass || successAppeared || failureGone || pathChanged);
 
-            if (!bypass && status >= 500) {
+            // Error-based lead: a healthy target that 4xx/5xxes on operator
+            // payloads is telling us the operators reached the query. That is
+            // a thread to pull, not a bypass — report it ONCE per scan as a
+            // MEDIUM finding with the visible error text as evidence.
+            boolean errorLead = !bypass && baselineStatus < 400 && status >= 400 &&
+                (status >= 500 || containsAny(body, PayloadDatabase.MONGODB_ERROR_SIGNATURES_STRICT));
+
+            if (errorLead && !errorLeadReported) {
+                errorLeadReported = true;
+                flog.log("[AUTH BYPASS] ⚠️  Error " + status + " on operator payload — operators likely " +
+                    "reached the query. Reported as MEDIUM lead: " + truncate(payload, 60));
+                flog.reportFinding(new FindingsLogger.Finding(
+                    "OPERATOR-ERROR", "MEDIUM",
+                    baseRR.request().url(),
+                    userField + "+" + passField,
+                    payload,
+                    modified.toString(),
+                    "Server error " + status + " on operator payload (baseline " + baselineStatus +
+                        "). Follow up with narrower payloads. Error text: " + snippet(body),
+                    null
+                ));
+            } else if (!bypass && status >= 500) {
                 flog.log("[AUTH BYPASS] ⚠️  Server error (" + status + ") on operator payload — " +
-                    "operators likely reached the query (interesting, NOT a bypass): " +
-                    truncate(payload, 60));
+                    "interesting, NOT a bypass (lead already reported): " + truncate(payload, 60));
             }
 
             String evidence = String.format(
@@ -614,6 +636,8 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         String baselinePath   = extractPath(baseline.response() != null
             ? baseline.response().headerValue("Location") : null);
 
+        boolean errorLeadReported = false;
+
         for (String payload : PayloadDatabase.getMongooseBypassPayloads()) {
             throttle();
             HttpRequest modified = baseRR.request()
@@ -634,11 +658,30 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                                  && containsAny(baselineBody, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
             boolean pathChanged   = !safeEquals(path, baselinePath) && isAuthSuccessPath(path);
 
-            // Same rule as the auth bypass scan: errors are never bypasses.
+            // Same rule as the auth bypass scan: errors are never bypasses,
+            // but a healthy target erroring on $where payloads is a lead.
             boolean statusBypass  = statusDiff && status >= 200 && status < 300
                                  && !containsAny(body, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
             boolean bypass = status < 400 &&
                 (statusBypass || successFound || failureGone || pathChanged);
+
+            boolean errorLead = !bypass && baselineStatus < 400 && status >= 400 &&
+                (status >= 500 || containsAny(body, PayloadDatabase.MONGODB_ERROR_SIGNATURES_STRICT));
+
+            if (errorLead && !errorLeadReported) {
+                errorLeadReported = true;
+                flog.log("[MONGOOSE CVE] ⚠️  Error " + status + " on $where payload — reported as MEDIUM lead");
+                flog.reportFinding(new FindingsLogger.Finding(
+                    "OPERATOR-ERROR", "MEDIUM",
+                    baseRR.request().url(),
+                    "body",
+                    payload,
+                    modified.toString(),
+                    "Server error " + status + " on $where/operator payload (baseline " + baselineStatus +
+                        "). Error text: " + snippet(body),
+                    null
+                ));
+            }
 
             String evidence = String.format(
                 "status=%d(was %d) path=%s content=%s",
@@ -761,6 +804,17 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * Visible-text snippet of an error page for lead evidence. Tags are
+     * stripped and the TAIL is kept: app-specific error messages sit at the
+     * end of the page, after layout/header boilerplate.
+     */
+    private String snippet(String html) {
+        if (html == null) return "";
+        String text = html.replaceAll("<[^>]*>", " ").replaceAll("\\s+", " ").trim();
+        return text.length() > 160 ? "…" + text.substring(text.length() - 160) : text;
     }
 
     private void showNotification(String title, String url, String payload, String evidence) {
