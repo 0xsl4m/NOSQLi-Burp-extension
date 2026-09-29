@@ -3,21 +3,29 @@ package nosqli;
 import burp.api.montoya.MontoyaApi;
 
 import javax.swing.*;
-import javax.swing.border.TitledBorder;
+import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 
 /**
- * NoSQLiTab — Burp Suite UI Tab (Redesigned)
+ * NoSQLiTab — Burp Suite UI tab, native look-and-feel.
  *
- * التحسينات:
- *  - الـ Live Log متوصّلة بـ FindingsLogger المشترك → بيظهر فيها كل حاجة من أي مكان
- *  - Findings Table بتعرض: Technique | Severity | Param | Payload | Evidence | URL | Full Request
- *  - زر Copy بيشتغل صح على كل عمود
- *  - زر "Show Full Request" بيفتح popup بالـ HTTP request كامل مع الـ payload
+ * Deliberately uses plain Swing components with NO custom colors so the tab
+ * follows Burp's own theme (dark or light), the way built-in Burp tools look.
+ * Exceptions: severity text is color-coded (functional, like Burp's scanner
+ * issue list) and the log/request panes are monospaced.
+ *
+ * Never use HTML markup in labels or dialogs — Burp renders it as literal text.
  */
 public class NoSQLiTab {
+
+    private static final int UI_FONT_SIZE  = 13;
+    private static final int CODE_FONT_SIZE = 13;
+
+    private static final Color SEVERITY_CRITICAL = new Color(204, 51, 51);
+    private static final Color SEVERITY_HIGH     = new Color(204, 120, 0);
+    private static final Color SEVERITY_MEDIUM   = new Color(153, 115, 0);
 
     private final MontoyaApi api;
     private final JPanel mainPanel;
@@ -39,7 +47,7 @@ public class NoSQLiTab {
 
     public NoSQLiTab(MontoyaApi api) {
         this.api = api;
-        this.mainPanel = new JPanel(new BorderLayout(5, 5));
+        this.mainPanel = new JPanel(new BorderLayout(0, 0));
         buildUI();
         hookLogger();
     }
@@ -53,13 +61,13 @@ public class NoSQLiTab {
     private void hookLogger() {
         FindingsLogger flog = FindingsLogger.getInstance();
 
-        // لوج نصي → يظهر في logArea
+        // Log lines → logArea
         flog.addLogListener(line -> {
             logArea.append(line);
             logArea.setCaretPosition(logArea.getDocument().getLength());
         });
 
-        // Finding جديد → يُضاف في الجدول
+        // New finding → table row
         flog.addFindingListener(f -> {
             int rowNum = findingsModel.getRowCount() + 1;
             findingsModel.addRow(new Object[]{
@@ -82,124 +90,40 @@ public class NoSQLiTab {
     // ─────────────────────────────────────────────────────────────
 
     private void buildUI() {
-        mainPanel.setBackground(new Color(30, 35, 45));
-        mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        mainPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
 
-        mainPanel.add(buildHeader(), BorderLayout.NORTH);
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("Findings",          buildFindingsPanel());
+        tabs.addTab("Log",               buildLogPanel());
+        tabs.addTab("Payload Cheatsheet", buildPayloadCheatsheet());
+        tabs.addTab("Guide",              buildGuidePanel());
 
-        // Main center: tabbed pane
-        JTabbedPane centerTabs = new JTabbedPane();
-        centerTabs.setBackground(new Color(30, 35, 45));
-        centerTabs.setForeground(Color.WHITE);
-
-        centerTabs.addTab("📊 Live Findings",    buildFindingsPanel());
-        centerTabs.addTab("📜 Live Log",          buildLogPanel());
-        centerTabs.addTab("📋 Payload Cheatsheet", buildPayloadCheatsheet());
-        centerTabs.addTab("📖 Methodology Guide",  buildGuidePanel());
-
-        mainPanel.add(centerTabs, BorderLayout.CENTER);
-        mainPanel.add(buildConfigPanel(), BorderLayout.SOUTH);
-    }
-
-    // ─── Header ───────────────────────────────────────────────────
-
-    private JPanel buildHeader() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(new Color(20, 25, 35));
-        panel.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
-
-        JLabel title = new JLabel("🔍 NoSQLi Hunter v" + NoSQLiScanner.VERSION);
-        title.setFont(new Font("Monospaced", Font.BOLD, 20));
-        title.setForeground(new Color(50, 200, 100));
-
-        JLabel subtitle = new JLabel(
-            "  MongoDB · CouchDB · Operator Injection · JS Injection · Blind Boolean · " +
-            "Time-Based · Auth Bypass · Content-Type Confusion · Mongoose CVE-2025-23061"
-        );
-        subtitle.setFont(new Font("SansSerif", Font.PLAIN, 13));
-        subtitle.setForeground(new Color(150, 180, 220));
-
-        JPanel titlePanel = new JPanel(new BorderLayout());
-        titlePanel.setBackground(new Color(20, 25, 35));
-        titlePanel.add(title, BorderLayout.NORTH);
-        titlePanel.add(subtitle, BorderLayout.SOUTH);
-
-        JLabel status = new JLabel("  ● ACTIVE");
-        status.setFont(new Font("Monospaced", Font.BOLD, 13));
-        status.setForeground(new Color(50, 220, 80));
-
-        panel.add(titlePanel, BorderLayout.CENTER);
-        panel.add(status, BorderLayout.EAST);
-        return panel;
+        mainPanel.add(tabs, BorderLayout.CENTER);
     }
 
     // ─── Findings Panel ───────────────────────────────────────────
 
     private JPanel buildFindingsPanel() {
-        JPanel panel = new JPanel(new BorderLayout(5, 5));
-        panel.setBackground(new Color(25, 30, 40));
+        JPanel panel = new JPanel(new BorderLayout(0, 0));
 
-        // Table
         JTable table = new JTable(findingsModel);
-        table.setBackground(new Color(20, 25, 35));
-        table.setForeground(new Color(200, 230, 255));
-        table.setSelectionBackground(new Color(50, 90, 140));
-        table.setFont(new Font("Monospaced", Font.PLAIN, 13));
-        table.getTableHeader().setBackground(new Color(35, 45, 60));
-        table.getTableHeader().setForeground(new Color(100, 200, 100));
+        table.setFont(table.getFont().deriveFont(Font.PLAIN, UI_FONT_SIZE));
         table.setRowHeight(26);
-        table.setGridColor(new Color(50, 60, 75));
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        table.getColumnModel().getColumn(3).setCellRenderer(severityRenderer());
 
-        // Column widths
         int[] widths = {35, 70, 150, 80, 120, 220, 220, 280};
         for (int i = 0; i < widths.length; i++) {
             table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         }
 
-        // Severity color renderer
-        table.setDefaultRenderer(Object.class, (tbl, value, isSelected, hasFocus, row, col) -> {
-            JLabel label = new JLabel(value != null ? value.toString() : "");
-            label.setOpaque(true);
-            label.setFont(new Font("Monospaced", Font.PLAIN, 13));
-
-            if (isSelected) {
-                label.setBackground(new Color(50, 90, 140));
-                label.setForeground(Color.WHITE);
-            } else {
-                // Color by severity
-                String sev = findingsModel.getValueAt(row, 3) != null
-                    ? findingsModel.getValueAt(row, 3).toString() : "";
-                Color bg = switch (sev) {
-                    case "CRITICAL" -> new Color(80, 20, 20);
-                    case "HIGH"     -> new Color(60, 30, 10);
-                    case "MEDIUM"   -> new Color(40, 40, 10);
-                    default         -> new Color(20, 25, 35);
-                };
-                label.setBackground(bg);
-                label.setForeground(new Color(200, 230, 255));
-            }
-            return label;
-        });
-
-        JScrollPane scroll = new JScrollPane(table);
-        scroll.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(new Color(50, 200, 100)),
-            "Findings (click row → Show Full Request)",
-            TitledBorder.LEFT, TitledBorder.TOP,
-            new Font("Monospaced", Font.BOLD, 13),
-            new Color(50, 200, 100)
-        ));
-        panel.add(scroll, BorderLayout.CENTER);
-
-        // Buttons row
-        JPanel btns = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
-        btns.setBackground(new Color(25, 30, 40));
-
-        JButton btnShowReq = darkButton("🔍 Show Full Request");
-        JButton btnCopyPayload = darkButton("📋 Copy Payload");
-        JButton btnCopyUrl = darkButton("🔗 Copy URL");
-        JButton btnClear = darkButton("🗑️ Clear Findings");
-        JButton btnExport = darkButton("💾 Export Findings");
+        // Buttons row (top, toolbar style)
+        JPanel btns = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
+        JButton btnShowReq     = plainButton("Show Full Request");
+        JButton btnCopyPayload = plainButton("Copy Payload");
+        JButton btnCopyUrl     = plainButton("Copy URL");
+        JButton btnClear       = plainButton("Clear Findings");
+        JButton btnExport      = plainButton("Export Findings");
 
         btnShowReq.addActionListener(e -> {
             int row = table.getSelectedRow();
@@ -235,7 +159,16 @@ public class NoSQLiTab {
 
         btnExport.addActionListener(e -> exportFindings());
 
-        // Double-click = show full request
+        btns.add(btnShowReq);
+        btns.add(btnCopyPayload);
+        btns.add(btnCopyUrl);
+        btns.add(btnClear);
+        btns.add(btnExport);
+
+        panel.add(btns, BorderLayout.NORTH);
+        panel.add(new JScrollPane(table), BorderLayout.CENTER);
+
+        // Double-click = show full request; right-click = copy cell
         table.addMouseListener(new java.awt.event.MouseAdapter() {
             public void mouseClicked(java.awt.event.MouseEvent ev) {
                 if (ev.getClickCount() == 2) {
@@ -251,7 +184,6 @@ public class NoSQLiTab {
                         );
                     }
                 }
-                // Right-click → copy cell
                 if (SwingUtilities.isRightMouseButton(ev)) {
                     int row = table.rowAtPoint(ev.getPoint());
                     int col = table.columnAtPoint(ev.getPoint());
@@ -263,50 +195,56 @@ public class NoSQLiTab {
             }
         });
 
-        btns.add(btnShowReq);
-        btns.add(btnCopyPayload);
-        btns.add(btnCopyUrl);
-        btns.add(btnClear);
-        btns.add(btnExport);
-        panel.add(btns, BorderLayout.SOUTH);
-
         return panel;
     }
 
-    /** Popup window shows the full HTTP request with payload highlighted */
+    /** Severity column: colored text only, everything else stays theme-native. */
+    private DefaultTableCellRenderer severityRenderer() {
+        return new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable t, Object value,
+                    boolean selected, boolean focused, int row, int col) {
+                Component c = super.getTableCellRendererComponent(t, value, selected, focused, row, col);
+                if (!selected && value != null) {
+                    switch (value.toString()) {
+                        case "CRITICAL" -> c.setForeground(SEVERITY_CRITICAL);
+                        case "HIGH"     -> c.setForeground(SEVERITY_HIGH);
+                        case "MEDIUM"   -> c.setForeground(SEVERITY_MEDIUM);
+                    }
+                }
+                return c;
+            }
+        };
+    }
+
+    /** Popup window shows the full HTTP request */
     private void showFullRequest(String technique, String param, String payload,
                                   String fullRequest, String redirectPath) {
         JDialog dialog = new JDialog((Frame) null, "Full HTTP Request — " + technique + " / " + param, false);
         dialog.setSize(900, 600);
         dialog.setLocationRelativeTo(null);
 
-        JPanel dp = new JPanel(new BorderLayout(5, 5));
-        dp.setBackground(new Color(20, 25, 35));
+        JPanel dp = new JPanel(new BorderLayout(0, 0));
 
-        // Plain text: HTML markup renders as literal text inside Burp's UI
         JLabel info = new JLabel(
             "Technique: " + technique + "    Parameter: " + param +
             "    Payload: " + truncate(payload, 80) +
             (redirectPath.isEmpty() ? "" : "    Redirect→ " + redirectPath)
         );
-        info.setFont(new Font("SansSerif", Font.BOLD, 13));
-        info.setForeground(new Color(80, 200, 100));
+        info.setFont(info.getFont().deriveFont(Font.BOLD, UI_FONT_SIZE));
         info.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 10));
         dp.add(info, BorderLayout.NORTH);
 
         JTextArea reqArea = new JTextArea(fullRequest);
         reqArea.setEditable(false);
-        reqArea.setBackground(new Color(15, 20, 30));
-        reqArea.setForeground(new Color(180, 255, 180));
-        reqArea.setFont(new Font("Monospaced", Font.PLAIN, 14));
+        reqArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, CODE_FONT_SIZE + 1));
         reqArea.setCaretPosition(0);
         dp.add(new JScrollPane(reqArea), BorderLayout.CENTER);
 
         JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        btnRow.setBackground(new Color(20, 25, 35));
-        JButton copyBtn = darkButton("📋 Copy Full Request");
+        JButton copyBtn = plainButton("Copy Full Request");
         copyBtn.addActionListener(e -> copyToClipboard(fullRequest));
-        JButton closeBtn = darkButton("Close");
+        JButton closeBtn = plainButton("Close");
         closeBtn.addActionListener(e -> dialog.dispose());
         btnRow.add(copyBtn);
         btnRow.add(closeBtn);
@@ -318,52 +256,31 @@ public class NoSQLiTab {
 
     // ─── Log Panel ────────────────────────────────────────────────
 
-    private JScrollPane buildLogPanel() {
+    private JPanel buildLogPanel() {
         logArea.setEditable(false);
-        logArea.setBackground(new Color(15, 20, 30));
-        logArea.setForeground(new Color(180, 255, 180));
-        logArea.setFont(new Font("Monospaced", Font.PLAIN, 13));
-        logArea.setText("[NoSQLi Hunter] Ready — use right-click menu or active scan.\n");
+        logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, CODE_FONT_SIZE));
+        logArea.setText("[NoSQLi Hunter] Ready — right-click any request and pick an attack, or run an active scan (Pro).\n");
 
-        JScrollPane sp = new JScrollPane(logArea);
-        sp.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(new Color(100, 200, 100)),
-            "Live Log (all scan activity)",
-            TitledBorder.LEFT, TitledBorder.TOP,
-            new Font("Monospaced", Font.BOLD, 13),
-            new Color(100, 200, 100)
-        ));
+        JPanel panel = new JPanel(new BorderLayout(0, 0));
+        panel.add(new JScrollPane(logArea), BorderLayout.CENTER);
 
-        // Add clear button inside a wrapper
-        JPanel wrapper = new JPanel(new BorderLayout());
-        wrapper.setBackground(new Color(15, 20, 30));
-        wrapper.add(sp, BorderLayout.CENTER);
-        JPanel logBtns = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 3));
-        logBtns.setBackground(new Color(15, 20, 30));
-        JButton clearLog = darkButton("🗑️ Clear Log");
+        JPanel logBtns = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
+        JButton clearLog = plainButton("Clear Log");
         clearLog.addActionListener(e -> logArea.setText(""));
-        JButton copyLog = darkButton("📋 Copy Log");
+        JButton copyLog = plainButton("Copy Log");
         copyLog.addActionListener(e -> copyToClipboard(logArea.getText()));
         logBtns.add(clearLog);
         logBtns.add(copyLog);
-        wrapper.add(logBtns, BorderLayout.SOUTH);
+        panel.add(logBtns, BorderLayout.SOUTH);
 
-        // Return the JScrollPane as a tab component
-        JPanel p = new JPanel(new BorderLayout());
-        p.setBackground(new Color(15, 20, 30));
-        p.add(sp, BorderLayout.CENTER);
-        p.add(logBtns, BorderLayout.SOUTH);
-        return new JScrollPane(p) {{
-            setBorder(null);
-        }};
+        return panel;
     }
 
     // ─── Payload Cheatsheet ───────────────────────────────────────
 
     private JScrollPane buildPayloadCheatsheet() {
         JTabbedPane tabs = new JTabbedPane();
-        tabs.setBackground(new Color(40, 45, 55));
-        tabs.setForeground(Color.WHITE);
+        tabs.setFont(tabs.getFont().deriveFont(Font.PLAIN, UI_FONT_SIZE));
 
         tabs.addTab("Operators",   buildTableWithCopy(
             new String[]{"Operator","URL-Encoded","JSON","Description"},
@@ -390,11 +307,13 @@ public class NoSQLiTab {
                 {"URL-Enc","user[$ne]=x&pass[$ne]=x",                     "Bypass with $ne on both"},
                 {"URL-Enc","user[$gt]=&pass[$gt]=",                       "Greater-than empty string"},
                 {"URL-Enc","user[$regex]=.*&pass[$ne]=x",                  "Regex match all usernames"},
+                {"URL-Enc","user[$regex]=admin.*&pass[$ne]=",              "Single admin account (multi-record-safe)"},
                 {"URL-Enc","user[$in][]=admin&pass[$ne]=x",               "Try common usernames"},
                 {"URL-Enc","user[$exists]=true&pass[$gt]=",               "Both fields exist"},
                 {"JSON",   "{\"u\":{\"$ne\":null},\"p\":{\"$ne\":null}}",  "Null bypass"},
                 {"JSON",   "{\"u\":{\"$gt\":\"\"},\"p\":{\"$gt\":\"\"}}",  "GT empty string"},
                 {"JSON",   "{\"u\":{\"$regex\":\".*\"},\"p\":{\"$ne\":\"\"}}","Regex all"},
+                {"JSON",   "{\"u\":{\"$regex\":\"admin.*\"},\"p\":{\"$ne\":\"\"}}","Single admin account"},
                 {"JSON",   "{\"u\":\"admin\",\"p\":{\"$ne\":\"wrong\"}}",  "Known user bypass"},
                 {"JSON",   "{\"$or\":[{\"$where\":\"1==1\"}]}",            "CVE-2025-23061 Mongoose"},
             }
@@ -422,15 +341,7 @@ public class NoSQLiTab {
             }
         ));
 
-        JScrollPane sp = new JScrollPane(tabs);
-        sp.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(new Color(50, 200, 100)),
-            "Payload Reference (right-click any cell to copy)",
-            TitledBorder.LEFT, TitledBorder.TOP,
-            new Font("Monospaced", Font.BOLD, 13),
-            new Color(50, 200, 100)
-        ));
-        return sp;
+        return new JScrollPane(tabs);
     }
 
     /** Table with right-click copy on any cell */
@@ -439,14 +350,9 @@ public class NoSQLiTab {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
         JTable table = new JTable(model);
-        table.setBackground(new Color(25, 30, 40));
-        table.setForeground(new Color(200, 230, 255));
-        table.setSelectionBackground(new Color(50, 80, 120));
-        table.setFont(new Font("Monospaced", Font.PLAIN, 13));
-        table.getTableHeader().setBackground(new Color(35, 45, 60));
-        table.getTableHeader().setForeground(new Color(100, 200, 100));
+        table.setFont(table.getFont().deriveFont(Font.PLAIN, UI_FONT_SIZE));
         table.setRowHeight(27);
-        table.setGridColor(new Color(50, 60, 75));
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
 
         // Right-click → copy cell
         table.addMouseListener(new java.awt.event.MouseAdapter() {
@@ -454,7 +360,6 @@ public class NoSQLiTab {
                 int row = table.rowAtPoint(ev.getPoint());
                 int col = table.columnAtPoint(ev.getPoint());
                 if (row >= 0 && col >= 0) {
-                    // always select the row
                     table.setRowSelectionInterval(row, row);
                     if (SwingUtilities.isRightMouseButton(ev)) {
                         Object val = table.getValueAt(row, col);
@@ -474,94 +379,50 @@ public class NoSQLiTab {
     private JPanel buildGuidePanel() {
         JTextArea guide = new JTextArea();
         guide.setEditable(false);
-        guide.setBackground(new Color(25, 30, 40));
-        guide.setForeground(new Color(200, 220, 255));
-        guide.setFont(new Font("Monospaced", Font.PLAIN, 13));
+        guide.setFont(new Font(Font.MONOSPACED, Font.PLAIN, CODE_FONT_SIZE));
         guide.setText(
-            "╔════════════════════════════════════════════════════════════╗\n" +
-            "║          NoSQLi Hunter — Testing Methodology               ║\n" +
-            "╠════════════════════════════════════════════════════════════╣\n" +
-            "║                                                            ║\n" +
-            "║  STEP 1: IDENTIFY BODY TYPE                                ║\n" +
-            "║  • JSON:        application/json body                      ║\n" +
-            "║  • URL-Encoded: application/x-www-form-urlencoded          ║\n" +
-            "║  • GET Params:  query string (?user=admin)                 ║\n" +
-            "║  • GraphQL:     JSON with 'query' field                    ║\n" +
-            "║                                                            ║\n" +
-            "║  STEP 2: ERROR DETECTION (Fastest, Highest Confidence)     ║\n" +
-            "║  • Inject: ' \" \\ ; { } $ null undefined                ║\n" +
-            "║  • Look for: MongoError, CastError, BSONTypeError          ║\n" +
-            "║  • CONFIRMED if error appears ONLY after injection         ║\n" +
-            "║                                                            ║\n" +
-            "║  STEP 3: BLIND BOOLEAN (Anti-FP: 2 pairs required)         ║\n" +
-            "║  • TRUE payload  → observe response                        ║\n" +
-            "║  • FALSE payload → compare response                        ║\n" +
-            "║  • Detects: size diff >15%, status change,                 ║\n" +
-            "║             URL path change (redirect), body content       ║\n" +
-            "║  • CONFIRMED if 2+ payload pairs agree                     ║\n" +
-            "║                                                            ║\n" +
-            "║  STEP 4: AUTH DETECTION (Content + Path based)             ║\n" +
-            "║  • Checks redirect URL path for dashboard/profile/admin    ║\n" +
-            "║  • Checks body for success keywords: dashboard, welcome    ║\n" +
-            "║  • Checks body for failure keywords disappearing           ║\n" +
-            "║  • NOT just status code change                             ║\n" +
-            "║                                                            ║\n" +
-            "║  STEP 5: TIME-BASED (Last resort, JS eval only)            ║\n" +
-            "║  • Baseline = avg(3 samples)                               ║\n" +
-            "║  • Inject JS delay: do{}while(new Date()-t<3000)           ║\n" +
-            "║  • CONFIRMED if elapsed > baseline×2.5 AND 2× verified    ║\n" +
-            "║                                                            ║\n" +
-            "║  FINDINGS TABLE                                            ║\n" +
-            "║  • Double-click any row → see FULL HTTP request            ║\n" +
-            "║  • Right-click any cell → copy value                       ║\n" +
-            "║  • Full request includes all headers + injected body       ║\n" +
-            "║                                                            ║\n" +
-            "║  CVE REFERENCES:                                           ║\n" +
-            "║  • CVE-2025-23061  Mongoose $where bypass via $or         ║\n" +
-            "║  • CAPEC-676       NoSQL Injection                         ║\n" +
-            "║  • CWE-943         Improper Neutralization                 ║\n" +
-            "╚════════════════════════════════════════════════════════════╝\n"
+            "NoSQLi Hunter — Testing Methodology\n" +
+            "===================================\n\n" +
+            "STEP 1: IDENTIFY BODY TYPE\n" +
+            "  JSON:         application/json body\n" +
+            "  URL-Encoded:  application/x-www-form-urlencoded\n" +
+            "  GET Params:   query string (?user=admin)\n" +
+            "  GraphQL:      JSON with 'query' field\n\n" +
+            "STEP 2: ERROR DETECTION (fastest, highest confidence)\n" +
+            "  Inject:  ' \" \\ ; { } $ null undefined\n" +
+            "  Look for MongoError, CastError, BSONTypeError\n" +
+            "  Confirmed if the error appears ONLY after injection.\n\n" +
+            "STEP 3: BLIND BOOLEAN (2+ agreeing pairs required)\n" +
+            "  TRUE payload  → observe response\n" +
+            "  FALSE payload → compare response\n" +
+            "  Detects: size diff >15%, status change, redirect path, body content.\n\n" +
+            "STEP 4: AUTH DETECTION (content + path, never status alone)\n" +
+            "  Baseline is re-taken with a wrong password if the captured request\n" +
+            "  already logs in. 4xx/5xx responses are never a bypass; they are\n" +
+            "  reported as OPERATOR-ERROR leads (the operators reached the query).\n\n" +
+            "STEP 5: TIME-BASED (last resort, JS eval only)\n" +
+            "  Baseline = avg(3 samples); payload delays ~3s.\n" +
+            "  Confirmed if elapsed > baseline x2.5 AND a second shot confirms.\n\n" +
+            "FINDINGS TABLE\n" +
+            "  Double-click any row  → full HTTP request\n" +
+            "  Right-click any cell  → copy value\n" +
+            "  Severity colors:      CRITICAL (confirmed) / HIGH / MEDIUM (leads)\n\n" +
+            "REFERENCES\n" +
+            "  CVE-2025-23061  Mongoose $where bypass via $or\n" +
+            "  CAPEC-676       NoSQL Injection\n" +
+            "  CWE-943         Improper Neutralization\n"
         );
 
         JPanel p = new JPanel(new BorderLayout());
-        p.setBackground(new Color(25, 30, 40));
         p.add(new JScrollPane(guide), BorderLayout.CENTER);
         return p;
     }
 
-    // ─── Config Panel ─────────────────────────────────────────────
-
-    private JPanel buildConfigPanel() {
-        JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 4));
-        panel.setBackground(new Color(25, 30, 40));
-        panel.setBorder(BorderFactory.createTitledBorder(
-            BorderFactory.createLineBorder(new Color(80, 80, 120)),
-            "Configuration",
-            TitledBorder.LEFT, TitledBorder.TOP,
-            new Font("SansSerif", Font.BOLD, 12),
-            new Color(150, 160, 200)
-        ));
-
-        JLabel info = new JLabel(
-            "  Boolean Diff: 15%  |  Time Threshold: 2500ms  |  Confirmations: 2  |  " +
-            "Auth Detection: Content + URL Path  |  " +
-            "Right-click requests for manual testing  |  Active scan auto-tests all params"
-        );
-        info.setForeground(new Color(140, 160, 200));
-        info.setFont(new Font("SansSerif", Font.PLAIN, 12));
-        panel.add(info);
-        return panel;
-    }
-
     // ─── Utilities ────────────────────────────────────────────────
 
-    private JButton darkButton(String text) {
+    private JButton plainButton(String text) {
         JButton b = new JButton(text);
-        b.setBackground(new Color(40, 50, 70));
-        b.setForeground(new Color(180, 210, 255));
-        b.setFont(new Font("SansSerif", Font.PLAIN, 13));
-        b.setFocusPainted(false);
-        b.setBorder(BorderFactory.createLineBorder(new Color(70, 80, 110)));
+        b.setFont(b.getFont().deriveFont(Font.PLAIN, UI_FONT_SIZE));
         return b;
     }
 
@@ -598,11 +459,6 @@ public class NoSQLiTab {
         copyToClipboard(sb.toString());
         showInfo("Findings exported to clipboard (" +
             FindingsLogger.getInstance().getFindings().size() + " findings)");
-    }
-
-    private String esc(String s) {
-        if (s == null) return "";
-        return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;");
     }
 
     private String truncate(String s, int max) {
