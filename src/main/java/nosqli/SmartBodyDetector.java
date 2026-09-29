@@ -110,6 +110,8 @@ public class SmartBodyDetector {
         switch (bodyType) {
             case JSON:
             case GRAPHQL:
+                // The walker also covers GraphQL: every leaf under "variables"
+                // is extracted as its own injectable parameter.
                 extractJsonParams(request, bodyType, result);
                 break;
             case URL_ENCODED:
@@ -121,6 +123,10 @@ public class SmartBodyDetector {
             case MULTIPART:
                 extractMultipartParams(request, result);
                 break;
+            case XML:
+                // XML bodies are not supported yet — extract nothing so the
+                // scans report "No parameters found" instead of misfiring.
+                break;
             default:
                 // Also check GET params regardless
                 extractGetParams(request, result);
@@ -131,98 +137,17 @@ public class SmartBodyDetector {
     }
 
     /**
-     * Extract JSON parameters recursively (handles nested objects).
+     * Extract JSON parameters via the zero-dependency walker: every leaf
+     * value — nested objects/arrays included — becomes an injectable
+     * parameter. Offsets are relative to the BODY string; value is the raw
+     * JSON text of the leaf.
      */
     private static void extractJsonParams(HttpRequest request, BodyType bodyType, List<ParsedParam> result) {
         String body = request.bodyToString();
         if (body == null || body.isEmpty()) return;
-
-        // Parse all string values in JSON body
-        // We look for: "key": "value" patterns
-        // Simple but effective for most real-world cases
-        int i = 0;
-        while (i < body.length()) {
-            // Find next key-value pair
-            int keyStart = body.indexOf('"', i);
-            if (keyStart == -1) break;
-
-            int keyEnd = findClosingQuote(body, keyStart + 1);
-            if (keyEnd == -1) break;
-
-            String key = body.substring(keyStart + 1, keyEnd);
-            i = keyEnd + 1;
-
-            // Skip whitespace and colon
-            while (i < body.length() && (body.charAt(i) == ' ' || body.charAt(i) == '\t' ||
-                   body.charAt(i) == '\n' || body.charAt(i) == ':')) {
-                i++;
-            }
-
-            if (i >= body.length()) break;
-
-            char nextChar = body.charAt(i);
-
-            if (nextChar == '"') {
-                // String value
-                int valStart = i;
-                int valEnd = findClosingQuote(body, i + 1);
-                if (valEnd == -1) break;
-
-                String value = body.substring(i + 1, valEnd);
-
-                // Calculate absolute offset in full request
-                int bodyOffset = request.toString().indexOf(body);
-                if (bodyOffset == -1) bodyOffset = 0;
-
-                result.add(new ParsedParam(
-                    key, value,
-                    bodyOffset + valStart,
-                    bodyOffset + valEnd + 1,
-                    bodyType,
-                    HttpParameterType.BODY
-                ));
-
-                i = valEnd + 1;
-            } else if (nextChar == '{' || nextChar == '[') {
-                // Skip nested objects/arrays - still add as injectable
-                int depth = 1;
-                int objStart = i;
-                i++;
-                char open = nextChar;
-                char close = (open == '{') ? '}' : ']';
-
-                while (i < body.length() && depth > 0) {
-                    char c = body.charAt(i);
-                    if (c == open) depth++;
-                    else if (c == close) depth--;
-                    else if (c == '"') {
-                        i = findClosingQuote(body, i + 1) + 1;
-                        continue;
-                    }
-                    i++;
-                }
-                // Don't add nested objects as individual params (handled recursively above)
-
-            } else {
-                // Number, boolean, null
-                int valStart = i;
-                while (i < body.length() && body.charAt(i) != ',' && body.charAt(i) != '}' &&
-                       body.charAt(i) != ']' && body.charAt(i) != '\n') {
-                    i++;
-                }
-                String value = body.substring(valStart, i).trim();
-
-                int bodyOffset = request.toString().indexOf(body);
-                if (bodyOffset == -1) bodyOffset = 0;
-
-                result.add(new ParsedParam(
-                    key, value,
-                    bodyOffset + valStart,
-                    bodyOffset + i,
-                    bodyType,
-                    HttpParameterType.BODY
-                ));
-            }
+        for (JsonWalker.Leaf leaf : JsonWalker.leaves(body)) {
+            result.add(new ParsedParam(
+                leaf.key, leaf.raw, leaf.start, leaf.end, bodyType, HttpParameterType.BODY));
         }
     }
 
@@ -372,12 +297,52 @@ public class SmartBodyDetector {
     }
 
     private static HttpRequest applyJsonPayload(HttpRequest request, ParsedParam param, String newJsonValue) {
-        // Replace the parameter value in the JSON body
         String body = request.bodyToString();
-        // Find "paramName": "oldValue" or "paramName": oldValue
-        // and replace the value portion with newJsonValue
-        String newBody = replaceJsonValue(body, param.name, param.value, newJsonValue);
-        return request.withBody(newBody);
+
+        // Fast path: the recorded offsets still point at the same raw value,
+        // so replace by exact position (immune to duplicate/substring keys).
+        if (param.valueStart >= 0 && param.valueEnd > param.valueStart
+                && param.valueEnd <= body.length()
+                && body.substring(param.valueStart, param.valueEnd).equals(param.value)) {
+            String replacement = jsonValueForPosition(body.charAt(param.valueStart), newJsonValue);
+            return request.withBody(body.substring(0, param.valueStart)
+                + replacement + body.substring(param.valueEnd));
+        }
+
+        // Fallback: replace the first leaf with the matching key.
+        String updated = JsonWalker.replaceFirstKey(body, param.name, newJsonValue);
+        return updated.equals(body) ? request : request.withBody(updated);
+    }
+
+    /**
+     * Decide how newJsonValue is spliced at a value position. Object/array/
+     * string/null/true/false/number literals are valid JSON on their own;
+     * anything else (e.g. JavaScript payload text) must be quoted when it
+     * replaces a string value, or the JSON structure breaks.
+     */
+    private static String jsonValueForPosition(char currentFirstChar, String newValue) {
+        String t = newValue.trim();
+        boolean rawValid = t.startsWith("{") || t.startsWith("[") || t.startsWith("\"")
+            || t.equals("null") || t.equals("true") || t.equals("false")
+            || t.matches("-?\\d+(\\.\\d+)?([eE][+-]?\\d+)?");
+        if (rawValid) return newValue;
+        if (currentFirstChar == '"') return quoteJsonLiteral(newValue);
+        return newValue; // non-string position — best effort, insert as-is
+    }
+
+    private static String quoteJsonLiteral(String s) {
+        StringBuilder sb = new StringBuilder("\"");
+        for (char c : s.toCharArray()) {
+            switch (c) {
+                case '"'  -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default   -> sb.append(c < 0x20 ? String.format("\\u%04x", (int) c) : String.valueOf(c));
+            }
+        }
+        return sb.append('"').toString();
     }
 
     private static HttpRequest applyGetParamPayload(HttpRequest request, ParsedParam param, String newValue) {
@@ -409,19 +374,6 @@ public class SmartBodyDetector {
         return null;
     }
 
-    private static int findClosingQuote(String s, int start) {
-        for (int i = start; i < s.length(); i++) {
-            if (s.charAt(i) == '\\') {
-                i++; // skip escaped char
-                continue;
-            }
-            if (s.charAt(i) == '"') {
-                return i;
-            }
-        }
-        return -1;
-    }
-
     private static boolean isPrintable(String s) {
         for (char c : s.toCharArray()) {
             if (c < 32 && c != '\t' && c != '\n' && c != '\r') return false;
@@ -430,50 +382,10 @@ public class SmartBodyDetector {
     }
 
     /**
-     * Replace a JSON string value for a given key.
-     * Handles both quoted strings and raw values (null, true, false, numbers).
+     * Replace the first leaf whose key matches. Kept for compatibility with
+     * the old signature; the JsonWalker does the structural work now.
      */
     public static String replaceJsonValue(String json, String key, String oldValue, String newValue) {
-        // Find "key": "oldValue" or "key": oldValue
-        // Simple string replacement - adequate for single-level params
-        String quotedOld = "\"" + oldValue + "\"";
-        String quotedNew = newValue; // new value might already include quotes or be an object
-
-        // Try quoted replacement first
-        int keyIdx = json.indexOf("\"" + key + "\"");
-        if (keyIdx == -1) return json;
-
-        int colonIdx = json.indexOf(":", keyIdx + key.length() + 2);
-        if (colonIdx == -1) return json;
-
-        // Skip whitespace after colon
-        int valStart = colonIdx + 1;
-        while (valStart < json.length() && json.charAt(valStart) == ' ') valStart++;
-
-        if (valStart >= json.length()) return json;
-
-        int valEnd;
-        if (json.charAt(valStart) == '"') {
-            // Quoted string value
-            valEnd = findClosingQuote(json, valStart + 1) + 1;
-        } else if (json.charAt(valStart) == '{') {
-            // Object - find closing brace
-            int depth = 1;
-            valEnd = valStart + 1;
-            while (valEnd < json.length() && depth > 0) {
-                if (json.charAt(valEnd) == '{') depth++;
-                else if (json.charAt(valEnd) == '}') depth--;
-                valEnd++;
-            }
-        } else {
-            // Primitive value (number, boolean, null)
-            valEnd = valStart;
-            while (valEnd < json.length() && json.charAt(valEnd) != ',' &&
-                   json.charAt(valEnd) != '}' && json.charAt(valEnd) != '\n') {
-                valEnd++;
-            }
-        }
-
-        return json.substring(0, valStart) + newValue + json.substring(valEnd);
+        return JsonWalker.replaceFirstKey(json, key, newValue);
     }
 }
