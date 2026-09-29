@@ -29,6 +29,9 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private static final long REQUEST_DELAY_MS = 150;
 
+    /** Extra pause engaged by rate-limit/blocking signals; decays on success. */
+    private long backoffMs = 0;
+
     /** Set while runFullScan drives the individual techniques, so each one
      *  skips its own summary and the full scan shows a single one at the end. */
     private volatile boolean suppressSummaries = false;
@@ -144,7 +147,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             : PayloadDatabase.getAuthBypassUrlEncodedParts();
 
         // Baseline
-        HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
+        HttpRequestResponse baseline = send(baseRR.request());
         int    baselineStatus  = baseline.response() != null ? baseline.response().statusCode() : 0;
         String baselineBody    = baseline.response() != null ? baseline.response().bodyToString() : "";
         String baselinePath    = extractPath(baseline.response() != null
@@ -179,7 +182,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 ? "\"nosqli_wrong_password\""
                 : "nosqli_wrong_password";
 
-            baseline = api.http().sendRequest(
+            baseline = send(
                 SmartBodyDetector.applyPayload(baseRR.request(), passParam, wrongPw));
             baselineStatus = baseline.response() != null ? baseline.response().statusCode() : 0;
             baselineBody   = baseline.response() != null ? baseline.response().bodyToString() : "";
@@ -205,7 +208,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 ? "{\"" + userField + "\": " + pair.userPart + ", \"" + passField + "\": " + pair.passPart + "}"
                 : userField + pair.userPart + "&" + passField + pair.passPart;
 
-            HttpRequestResponse rr = api.http().sendRequest(modified);
+            HttpRequestResponse rr = send(modified);
             if (rr.response() == null) continue;
 
             int    status     = rr.response().statusCode();
@@ -320,7 +323,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             return 0;
         }
 
-        HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
+        HttpRequestResponse baseline = send(baseRR.request());
         int    baselineLen    = baseline.response() != null ? baseline.response().body().length() : 0;
         int    baselineStatus = baseline.response() != null ? baseline.response().statusCode() : 0;
         String baselineBody   = baseline.response() != null ? baseline.response().bodyToString() : "";
@@ -355,9 +358,17 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 HttpRequest trueReq  = SmartBodyDetector.applyOperatorPayload(baseRR.request(), param, pair.truePayload);
                 HttpRequest falseReq = SmartBodyDetector.applyOperatorPayload(baseRR.request(), param, pair.falsePayload);
 
-                HttpRequestResponse trueRR  = api.http().sendRequest(trueReq);
-                HttpRequestResponse falseRR = api.http().sendRequest(falseReq);
+                HttpRequestResponse trueRR  = send(trueReq);
+                HttpRequestResponse falseRR = send(falseReq);
                 if (trueRR.response() == null || falseRR.response() == null) continue;
+
+                // A WAF/rate-limit page on either side makes this pair noise.
+                if (isBlockStatus(trueRR.response().statusCode())
+                        || isBlockStatus(falseRR.response().statusCode())) {
+                    flog.log("[OPERATOR SCAN]   " + param.name + " | " + pair.description
+                        + " | blocked response (WAF/rate-limit) — skipped");
+                    continue;
+                }
 
                 int trueStatus  = trueRR.response().statusCode();
                 int falseStatus = falseRR.response().statusCode();
@@ -386,8 +397,8 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 if (sig.any()) {
                     // Stability check: a real differential reproduces on resend.
                     throttle();
-                    HttpRequestResponse trueRR2  = api.http().sendRequest(trueReq);
-                    HttpRequestResponse falseRR2 = api.http().sendRequest(falseReq);
+                    HttpRequestResponse trueRR2  = send(trueReq);
+                    HttpRequestResponse falseRR2 = send(falseReq);
                     boolean stable = false;
                     if (trueRR2.response() != null && falseRR2.response() != null) {
                         String t2 = DiffEngine.normalize(trueRR2.response().bodyToString(), pair.truePayload);
@@ -450,7 +461,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
-        HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
+        HttpRequestResponse baseline = send(baseRR.request());
         String baselineBody = baseline.response() != null ? baseline.response().bodyToString() : "";
         String baselinePath = extractPath(baseline.response() != null
             ? baseline.response().headerValue("Location") : null);
@@ -467,8 +478,8 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 HttpRequest trueReq  = SmartBodyDetector.applyPayload(baseRR.request(), param, pair.truePayload);
                 HttpRequest falseReq = SmartBodyDetector.applyPayload(baseRR.request(), param, pair.falsePayload);
 
-                HttpRequestResponse trueRR  = api.http().sendRequest(trueReq);
-                HttpRequestResponse falseRR = api.http().sendRequest(falseReq);
+                HttpRequestResponse trueRR  = send(trueReq);
+                HttpRequestResponse falseRR = send(falseReq);
                 if (trueRR.response() == null || falseRR.response() == null) continue;
 
                 int trueLen  = trueRR.response().body().length();
@@ -535,7 +546,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         long baselineTime = 0;
         for (int i = 0; i < 3; i++) {
             long s = System.currentTimeMillis();
-            api.http().sendRequest(baseRR.request());
+            send(baseRR.request());
             baselineTime += System.currentTimeMillis() - s;
         }
         baselineTime /= 3;
@@ -553,7 +564,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 HttpRequest injected = SmartBodyDetector.applyPayload(baseRR.request(), param, tp.payload);
 
                 long s = System.currentTimeMillis();
-                HttpRequestResponse rr = api.http().sendRequest(injected);
+                HttpRequestResponse rr = send(injected);
                 long elapsed = System.currentTimeMillis() - s;
 
                 // Same thresholds as the scanner's time stage (parity).
@@ -568,7 +579,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     for (int i = 0; i < 2; i++) {
                         throttle();
                         long cs = System.currentTimeMillis();
-                        api.http().sendRequest(injected);
+                        send(injected);
                         long ce = System.currentTimeMillis() - cs;
                         if (ce >= 2500 && ce >= baselineTime * 2.5) conf++;
                     }
@@ -617,7 +628,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
         if (params.isEmpty()) { flog.log("[CT CONFUSION] No params."); ScanState.end(scanHost); return 0; }
 
-        HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
+        HttpRequestResponse baseline = send(baseRR.request());
         int    baselineStatus = baseline.response() != null ? baseline.response().statusCode() : 0;
         int    baselineLen    = baseline.response() != null ? baseline.response().body().length() : 0;
         String baselinePath   = extractPath(baseline.response() != null
@@ -632,7 +643,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     .withBody(jsonPayload)
                     .withUpdatedHeader("Content-Type","application/json");
 
-                HttpRequestResponse rr = api.http().sendRequest(confused);
+                HttpRequestResponse rr = send(confused);
                 if (rr.response() == null) continue;
 
                 int    status   = rr.response().statusCode();
@@ -698,7 +709,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         }
         int findings = 0;
 
-        HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
+        HttpRequestResponse baseline = send(baseRR.request());
         int baselineLen = baseline.response() != null ? baseline.response().body().length() : 0;
 
         for (String payload : PayloadDatabase.getAggregationPayloads()) {
@@ -708,7 +719,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 .withBody(payload)
                 .withUpdatedHeader("Content-Type","application/json");
 
-            HttpRequestResponse rr = api.http().sendRequest(modified);
+            HttpRequestResponse rr = send(modified);
             if (rr.response() == null) continue;
 
             int    len      = rr.response().body().length();
@@ -760,7 +771,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         }
         int findings = 0;
 
-        HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
+        HttpRequestResponse baseline = send(baseRR.request());
         int    baselineStatus = baseline.response() != null ? baseline.response().statusCode() : 0;
         String baselineBody   = baseline.response() != null ? baseline.response().bodyToString() : "";
         String baselinePath   = extractPath(baseline.response() != null
@@ -775,7 +786,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 .withBody(payload)
                 .withUpdatedHeader("Content-Type","application/json");
 
-            HttpRequestResponse rr = api.http().sendRequest(modified);
+            HttpRequestResponse rr = send(modified);
             if (rr.response() == null) continue;
 
             int    status  = rr.response().statusCode();
@@ -1042,13 +1053,40 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         return s.length() > max ? s.substring(0, max) + "..." : s;
     }
 
-    /** Small pause between manual-scan requests to avoid burst rate-limits. */
+    /** Small pause between manual-scan requests; grows under rate-limiting. */
     private void throttle() {
         try {
-            Thread.sleep(REQUEST_DELAY_MS);
+            Thread.sleep(REQUEST_DELAY_MS + backoffMs);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /** Send through Burp and feed the response to the backoff logic. */
+    private HttpRequestResponse send(HttpRequest req) {
+        HttpRequestResponse rr = api.http().sendRequest(req);
+        noteResponse(rr);
+        return rr;
+    }
+
+    /** 429/503/connection failure engage exponential backoff; 2xx decays it. */
+    private void noteResponse(HttpRequestResponse rr) {
+        int status = rr != null && rr.response() != null ? rr.response().statusCode() : -1;
+        if (status == 429 || status == 503 || status == -1) {
+            long next = backoffMs == 0 ? 500 : Math.min(backoffMs * 2, 8000);
+            if (next != backoffMs) {
+                backoffMs = next;
+                flog.log("[NoSQLi] Rate-limit/blocking signal (status=" + status
+                    + ") — backing off " + backoffMs + "ms between requests");
+            }
+        } else if (status >= 200 && status < 400 && backoffMs > 0) {
+            backoffMs = backoffMs / 2;
+        }
+    }
+
+    /** WAF/rate-limit page: never usable as differential evidence. */
+    private boolean isBlockStatus(int status) {
+        return status == 429 || status == 403 || status == 503;
     }
 
     /**
