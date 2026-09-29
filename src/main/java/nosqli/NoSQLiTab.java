@@ -1,6 +1,7 @@
 package nosqli;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.http.message.requests.HttpRequest;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;
@@ -120,6 +121,7 @@ public class NoSQLiTab {
         // Buttons row (top, toolbar style)
         JPanel btns = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
         JButton btnShowReq     = plainButton("Show Full Request");
+        JButton btnSendRepeater = plainButton("Send to Repeater");
         JButton btnCopyPayload = plainButton("Copy Payload");
         JButton btnCopyUrl     = plainButton("Copy URL");
         JButton btnClear       = plainButton("Clear Findings");
@@ -136,6 +138,18 @@ public class NoSQLiTab {
                 (String) findingsModel.getValueAt(row, 5),
                 fullReq, path
             );
+        });
+
+        btnSendRepeater.addActionListener(e -> {
+            int row = table.getSelectedRow();
+            if (row < 0) { showInfo("Select a finding row first."); return; }
+            String fullReq = row < fullRequests.size() ? fullRequests.get(row) : null;
+            if (fullReq == null || fullReq.isEmpty()) { showInfo("No stored request for this finding."); return; }
+            try {
+                api.repeater().sendToRepeater(HttpRequest.httpRequest(fullReq), "NoSQLi Hunter");
+            } catch (Exception ex) {
+                showInfo("Could not send to Repeater: " + ex.getMessage());
+            }
         });
 
         btnCopyPayload.addActionListener(e -> {
@@ -160,6 +174,7 @@ public class NoSQLiTab {
         btnExport.addActionListener(e -> exportFindings());
 
         btns.add(btnShowReq);
+        btns.add(btnSendRepeater);
         btns.add(btnCopyPayload);
         btns.add(btnCopyUrl);
         btns.add(btnClear);
@@ -235,11 +250,22 @@ public class NoSQLiTab {
         info.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 10));
         dp.add(info, BorderLayout.NORTH);
 
-        JTextArea reqArea = new JTextArea(fullRequest);
-        reqArea.setEditable(false);
-        reqArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, CODE_FONT_SIZE + 1));
-        reqArea.setCaretPosition(0);
-        dp.add(new JScrollPane(reqArea), BorderLayout.CENTER);
+        // Native Burp request editor (themed, syntax-highlighted); plain text
+        // fallback if the stored request cannot be parsed.
+        Component requestComponent;
+        try {
+            burp.api.montoya.ui.editor.HttpRequestEditor editor =
+                api.userInterface().createHttpRequestEditor();
+            editor.setRequest(HttpRequest.httpRequest(fullRequest));
+            requestComponent = editor.uiComponent();
+        } catch (Exception ex) {
+            JTextArea reqArea = new JTextArea(fullRequest);
+            reqArea.setEditable(false);
+            reqArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, CODE_FONT_SIZE + 1));
+            reqArea.setCaretPosition(0);
+            requestComponent = new JScrollPane(reqArea);
+        }
+        dp.add(requestComponent, BorderLayout.CENTER);
 
         JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton copyBtn = plainButton("Copy Full Request");
