@@ -25,7 +25,6 @@ public class NoSQLiScanCheck implements ScanCheck {
 
     private static final long   TIME_THRESHOLD_MS       = 2500;
     private static final int    TIME_CONFIRMATION_COUNT = 2;
-    private static final double BOOLEAN_DIFF_THRESHOLD  = 0.15;
     private static final long   REQUEST_DELAY_MS        = 150;
 
     public NoSQLiScanCheck(MontoyaApi api) {
@@ -53,7 +52,8 @@ public class NoSQLiScanCheck implements ScanCheck {
         if (e != null) { issues.add(e); return auditResult(issues); }
 
         // Stage 2 — Boolean
-        AuditIssue b = runBooleanDetection(baseRR, insertionPoint, baselineLen, baselinePath);
+        AuditIssue b = runBooleanDetection(baseRR, insertionPoint, baselineLen,
+                                            baselineBody, baselinePath);
         if (b != null) { issues.add(b); return auditResult(issues); }
 
         // Stage 3 — Time
@@ -169,7 +169,7 @@ public class NoSQLiScanCheck implements ScanCheck {
     // ─── STAGE 2: BOOLEAN ────────────────────────────────────────
 
     private AuditIssue runBooleanDetection(HttpRequestResponse baseRR,
-            AuditInsertionPoint pt, int baselineLen, String baselinePath) {
+            AuditInsertionPoint pt, int baselineLen, String baselineBody, String baselinePath) {
 
         // Operator injection changes the parameter NAME (user[$ne]=x), but an
         // AuditInsertionPoint only replaces the parameter VALUE and applies its
@@ -204,6 +204,8 @@ public class NoSQLiScanCheck implements ScanCheck {
         HttpRequestResponse trueEv = null, falseEv = null;
         HttpRequest bestReq = null;
 
+        String normBaseline = DiffEngine.normalize(baselineBody, null);
+
         for (PayloadDatabase.BooleanPair pair : pairs) {
             throttle();
             HttpRequest trueReq = SmartBodyDetector.applyOperatorPayload(
@@ -216,29 +218,45 @@ public class NoSQLiScanCheck implements ScanCheck {
 
             if (trueRR.response() == null || falseRR.response() == null) continue;
 
-            int tLen = trueRR.response().body().length();
-            int fLen = falseRR.response().body().length();
-
-            // ── Content change detection ──
-            boolean statusDiff  = trueRR.response().statusCode() != falseRR.response().statusCode();
-            boolean sizeDiff    = isSignificantDiff(tLen, fLen);
-            boolean trueCloser  = Math.abs(tLen - baselineLen) <= Math.abs(fLen - baselineLen);
-
-            // ── URL path change detection (auth redirect) ──
-            // Differential evidence must come from TRUE vs FALSE behavior only.
-            // Comparing either side against the baseline here reports a diff
-            // when both sides redirect identically away from the baseline.
+            int trueStatus  = trueRR.response().statusCode();
+            int falseStatus = falseRR.response().statusCode();
             String truePath  = extractPath(trueRR.response().headerValue("Location"));
             String falsePath = extractPath(falseRR.response().headerValue("Location"));
-            boolean pathDiff = !safeEquals(truePath, falsePath);
 
-            // ── Body content change ──
-            boolean bodyChanged = isContentDifferent(
-                trueRR.response().bodyToString(),
-                falseRR.response().bodyToString()
-            );
+            // Compare normalized bodies: strip the reflected payload and
+            // dynamic per-response content so only real behavior differs.
+            String normTrue  = DiffEngine.normalize(trueRR.response().bodyToString(), pair.truePayload);
+            String normFalse = DiffEngine.normalize(falseRR.response().bodyToString(), pair.falsePayload);
+            DiffEngine.Signals sig = DiffEngine.evaluate(
+                trueStatus != falseStatus,
+                normTrue.length(), normFalse.length(),
+                normTrue, normFalse, truePath, falsePath);
 
-            if ((statusDiff || sizeDiff || pathDiff || bodyChanged) && trueCloser) {
+            // TRUE must sit closer to the normalized baseline than FALSE does.
+            boolean trueCloser =
+                Math.abs(normTrue.length() - normBaseline.length()) <=
+                Math.abs(normFalse.length() - normBaseline.length());
+
+            if (sig.any() && trueCloser) {
+                // Stability check: a real differential reproduces on resend.
+                throttle();
+                HttpRequestResponse trueRR2  = api.http().sendRequest(trueReq);
+                HttpRequestResponse falseRR2 = api.http().sendRequest(falseReq);
+                boolean stable = false;
+                if (trueRR2.response() != null && falseRR2.response() != null) {
+                    String t2 = DiffEngine.normalize(trueRR2.response().bodyToString(), pair.truePayload);
+                    String f2 = DiffEngine.normalize(falseRR2.response().bodyToString(), pair.falsePayload);
+                    DiffEngine.Signals sig2 = DiffEngine.evaluate(
+                        trueRR2.response().statusCode() != falseRR2.response().statusCode(),
+                        t2.length(), f2.length(), t2, f2,
+                        extractPath(trueRR2.response().headerValue("Location")),
+                        extractPath(falseRR2.response().headerValue("Location")));
+                    stable = sig2.any();
+                }
+                if (!stable) {
+                    flog.log("[NoSQLi] Boolean pair not reproducible — skipped: " + pair.description);
+                    continue;
+                }
                 confirmed++;
                 if (bestDesc == null) {
                     bestDesc    = pair.description;
@@ -358,35 +376,6 @@ public class NoSQLiScanCheck implements ScanCheck {
         return null;
     }
 
-    private boolean isSignificantDiff(int a, int b) {
-        return (Math.abs(a - b) / Math.max((a + b) / 2.0, 1)) > BOOLEAN_DIFF_THRESHOLD;
-    }
-
-    /**
-     * هل في فرق مهم في محتوى الصفحة؟
-     * بيشوف كلمات دالة على Auth success/failure
-     */
-    private boolean isContentDifferent(String trueBody, String falseBody) {
-        if (trueBody == null || falseBody == null) return false;
-
-        // شوف لو الـ true body فيه keyword نجاح والـ false مفيهوش
-        boolean trueHasSuccess  = containsAny(trueBody,  PayloadDatabase.AUTH_SUCCESS_KEYWORDS);
-        boolean falseHasSuccess = containsAny(falseBody, PayloadDatabase.AUTH_SUCCESS_KEYWORDS);
-        boolean trueHasFail     = containsAny(trueBody,  PayloadDatabase.AUTH_FAILURE_KEYWORDS);
-        boolean falseHasFail    = containsAny(falseBody, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
-
-        return (trueHasSuccess && !falseHasSuccess) ||
-               (!trueHasFail   && falseHasFail);
-    }
-
-    private boolean containsAny(String text, String[] keywords) {
-        if (text == null) return false;
-        String lower = text.toLowerCase();
-        for (String kw : keywords)
-            if (lower.contains(kw.toLowerCase())) return true;
-        return false;
-    }
-
     /** استخرج الـ path من Location header */
     private String extractPath(String locationHeader) {
         if (locationHeader == null || locationHeader.isEmpty()) return "";
@@ -396,12 +385,6 @@ public class NoSQLiScanCheck implements ScanCheck {
         } catch (Exception e) {
             return locationHeader;
         }
-    }
-
-    private boolean safeEquals(String a, String b) {
-        if (a == null && b == null) return true;
-        if (a == null || b == null) return false;
-        return a.equals(b);
     }
 
     // ─── DETAIL BUILDERS ─────────────────────────────────────────

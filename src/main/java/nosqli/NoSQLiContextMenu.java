@@ -321,32 +321,51 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 HttpRequestResponse falseRR = api.http().sendRequest(falseReq);
                 if (trueRR.response() == null || falseRR.response() == null) continue;
 
-                int trueLen  = trueRR.response().body().length();
-                int falseLen = falseRR.response().body().length();
-                int trueStatus = trueRR.response().statusCode();
+                int trueStatus  = trueRR.response().statusCode();
                 int falseStatus = falseRR.response().statusCode();
-
                 String truePath  = extractPath(trueRR.response().headerValue("Location"));
                 String falsePath = extractPath(falseRR.response().headerValue("Location"));
 
-                boolean sizeDiff   = isSignificantDiff(trueLen, falseLen);
-                boolean statusDiff = trueStatus != falseStatus;
-                boolean pathDiff   = !safeEquals(truePath, falsePath);
-                boolean bodyDiff   = isContentDifferent(
-                    trueRR.response().bodyToString(), falseRR.response().bodyToString());
+                // Compare normalized bodies: strip the reflected payload and
+                // dynamic per-response content so only real behavior differs.
+                String normTrue  = DiffEngine.normalize(trueRR.response().bodyToString(), pair.truePayload);
+                String normFalse = DiffEngine.normalize(falseRR.response().bodyToString(), pair.falsePayload);
+
+                DiffEngine.Signals sig = DiffEngine.evaluate(
+                    trueStatus != falseStatus,
+                    normTrue.length(), normFalse.length(),
+                    normTrue, normFalse, truePath, falsePath);
 
                 String evidence = String.format(
                     "TRUE: %db/%d%s | FALSE: %db/%d%s",
-                    trueLen, trueStatus, truePath.isEmpty() ? "" : " → " + truePath,
-                    falseLen, falseStatus, falsePath.isEmpty() ? "" : " → " + falsePath
+                    normTrue.length(), trueStatus, truePath.isEmpty() ? "" : " → " + truePath,
+                    normFalse.length(), falseStatus, falsePath.isEmpty() ? "" : " → " + falsePath
                 );
 
-                boolean diff = sizeDiff || statusDiff || pathDiff || bodyDiff;
-
                 flog.log("[OPERATOR SCAN]   " + param.name + " | " + pair.description +
-                    " | " + evidence + " | " + (diff ? " DIFFERENT" : "Same"));
+                    " | " + evidence + " | " + (sig.any() ? "DIFFERENT (" + sig.describe() + ")" : "Same"));
 
-                if (diff) {
+                if (sig.any()) {
+                    // Stability check: a real differential reproduces on resend.
+                    throttle();
+                    HttpRequestResponse trueRR2  = api.http().sendRequest(trueReq);
+                    HttpRequestResponse falseRR2 = api.http().sendRequest(falseReq);
+                    boolean stable = false;
+                    if (trueRR2.response() != null && falseRR2.response() != null) {
+                        String t2 = DiffEngine.normalize(trueRR2.response().bodyToString(), pair.truePayload);
+                        String f2 = DiffEngine.normalize(falseRR2.response().bodyToString(), pair.falsePayload);
+                        DiffEngine.Signals sig2 = DiffEngine.evaluate(
+                            trueRR2.response().statusCode() != falseRR2.response().statusCode(),
+                            t2.length(), f2.length(), t2, f2,
+                            extractPath(trueRR2.response().headerValue("Location")),
+                            extractPath(falseRR2.response().headerValue("Location")));
+                        stable = sig2.any();
+                    }
+                    if (!stable) {
+                        flog.log("[OPERATOR SCAN]   " + param.name + " | " + pair.description +
+                            " | diff not reproducible — skipped");
+                        continue;
+                    }
                     hits++;
                     api.siteMap().add(trueRR);
                     if (bestPayload == null) {
@@ -767,14 +786,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     /**
      * هل محتوى الـ response اتغيّر بشكل دال على Auth؟
+     * Canonical implementation lives in DiffEngine (shared with the scanner).
      */
     private boolean isContentDifferent(String body1, String body2) {
-        if (body1 == null || body2 == null) return false;
-        boolean s1 = containsAny(body1, PayloadDatabase.AUTH_SUCCESS_KEYWORDS);
-        boolean s2 = containsAny(body2, PayloadDatabase.AUTH_SUCCESS_KEYWORDS);
-        boolean f1 = containsAny(body1, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
-        boolean f2 = containsAny(body2, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
-        return (s1 && !s2) || (!f1 && f2);
+        return DiffEngine.keywordFlip(body1, body2);
     }
 
     private String extractPath(String locationHeader) {
