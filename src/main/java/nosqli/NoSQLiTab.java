@@ -127,6 +127,12 @@ public class NoSQLiTab {
         JButton btnCopyUrl     = plainButton("Copy URL");
         JButton btnClear       = plainButton("Clear Findings");
         JButton btnExport      = plainButton("Export Findings");
+        JButton btnCancelScan  = plainButton("Cancel Scan");
+        btnCancelScan.addActionListener(e -> {
+            ScanState.cancel();
+            FindingsLogger.getInstance().log(
+                "[NoSQLi] Cancel requested — running scans stop after the current request.");
+        });
 
         // View-row -> model-row conversion: with a row sorter active,
         // getSelectedRow() is the VIEW index while the parallel request lists
@@ -186,6 +192,7 @@ public class NoSQLiTab {
         btns.add(btnCopyUrl);
         btns.add(btnClear);
         btns.add(btnExport);
+        btns.add(btnCancelScan);
 
         panel.add(btns, BorderLayout.NORTH);
         panel.add(new JScrollPane(table), BorderLayout.CENTER);

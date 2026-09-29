@@ -115,11 +115,18 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private int runAuthBypass(HttpRequestResponse baseRR, SmartBodyDetector.BodyType forceType) {
         flog.log("\n[AUTH BYPASS] Starting → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[AUTH BYPASS] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return 0;
+        }
         int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
         if (params.isEmpty()) {
             flog.log("[AUTH BYPASS] No parameters found.");
+            ScanState.end(scanHost);
             return 0;
         }
 
@@ -183,7 +190,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
         boolean errorLeadReported = false;
 
-        for (PayloadDatabase.AuthBypassPair pair : payloads) {
+        for (int pi = 0; pi < payloads.size(); pi++) {
+            if (cancelRequested("AUTH BYPASS")) return findings;
+            PayloadDatabase.AuthBypassPair pair = payloads.get(pi);
+            flog.log("[AUTH BYPASS] Attempt " + (pi + 1) + "/" + payloads.size() + ": " + pair.description);
             throttle();
 
             // Rewrite ONLY the auth fields; every other field of the original
@@ -282,6 +292,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 api.siteMap().add(rr);
             }
         }
+        ScanState.end(scanHost);
         flog.log("[AUTH BYPASS] Completed.");
         if (!suppressSummaries && findings > 0)
             showScanSummary("Authentication Bypass", baseRR.request().url(), findings);
@@ -294,11 +305,18 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private int runOperatorScan(HttpRequestResponse baseRR) {
         flog.log("\n[OPERATOR SCAN] Starting → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[OPERATOR SCAN] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return 0;
+        }
         int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
         if (params.isEmpty()) {
             flog.log("[OPERATOR SCAN] No injectable parameters found.");
+            ScanState.end(scanHost);
             return 0;
         }
 
@@ -310,6 +328,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             ? baseline.response().headerValue("Location") : null);
 
         for (SmartBodyDetector.ParsedParam param : params) {
+            if (cancelRequested("OPERATOR SCAN")) return findings;
             flog.log("[OPERATOR SCAN] Testing parameter: " + param.name);
 
             List<PayloadDatabase.BooleanPair> pairs;
@@ -331,6 +350,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             String bestEvidence = null;
 
             for (PayloadDatabase.BooleanPair pair : pairs) {
+                if (cancelRequested("OPERATOR SCAN")) return findings;
                 throttle();
                 HttpRequest trueReq  = SmartBodyDetector.applyOperatorPayload(baseRR.request(), param, pair.truePayload);
                 HttpRequest falseReq = SmartBodyDetector.applyOperatorPayload(baseRR.request(), param, pair.falsePayload);
@@ -408,6 +428,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 ));
             }
         }
+        ScanState.end(scanHost);
         flog.log("[OPERATOR SCAN] Completed.");
         if (!suppressSummaries && findings > 0)
             showScanSummary("Operator Injection Scan", baseRR.request().url(), findings);
@@ -420,6 +441,12 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private int runJsScan(HttpRequestResponse baseRR) {
         flog.log("\n[JS INJECTION] Starting → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[JS INJECTION] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return 0;
+        }
         int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
@@ -431,9 +458,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         List<PayloadDatabase.JsPair> jsPairs = PayloadDatabase.getJsInjectionPairs();
 
         for (SmartBodyDetector.ParsedParam param : params) {
+            if (cancelRequested("JS INJECTION")) return findings;
             flog.log("[JS INJECTION] Testing parameter: " + param.name);
 
             for (PayloadDatabase.JsPair pair : jsPairs) {
+                if (cancelRequested("JS INJECTION")) return findings;
                 throttle();
                 HttpRequest trueReq  = SmartBodyDetector.applyPayload(baseRR.request(), param, pair.truePayload);
                 HttpRequest falseReq = SmartBodyDetector.applyPayload(baseRR.request(), param, pair.falsePayload);
@@ -482,6 +511,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 }
             }
         }
+        ScanState.end(scanHost);
         flog.log("[JS INJECTION] Completed.");
         if (!suppressSummaries && findings > 0)
             showScanSummary("JavaScript Injection", baseRR.request().url(), findings);
@@ -494,6 +524,12 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private int runTimeScan(HttpRequestResponse baseRR) {
         flog.log("\n[TIME-BASED] Starting → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[TIME-BASED] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return 0;
+        }
         int findings = 0;
 
         long baselineTime = 0;
@@ -508,9 +544,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
 
         for (SmartBodyDetector.ParsedParam param : params) {
+            if (cancelRequested("TIME-BASED")) return findings;
             flog.log("[TIME-BASED] Testing: " + param.name);
 
             for (PayloadDatabase.TimedPayload tp : PayloadDatabase.getTimeBasedPayloads()) {
+                if (cancelRequested("TIME-BASED")) return findings;
                 throttle();
                 HttpRequest injected = SmartBodyDetector.applyPayload(baseRR.request(), param, tp.payload);
 
@@ -555,6 +593,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 }
             }
         }
+        ScanState.end(scanHost);
         flog.log("[TIME-BASED] Completed.");
         if (!suppressSummaries && findings > 0)
             showScanSummary("Time-Based Blind", baseRR.request().url(), findings);
@@ -567,10 +606,16 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private int runContentTypeConfusion(HttpRequestResponse baseRR) {
         flog.log("\n[CT CONFUSION] Starting → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[CT CONFUSION] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return 0;
+        }
         int findings = 0;
 
         List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
-        if (params.isEmpty()) { flog.log("[CT CONFUSION] No params."); return 0; }
+        if (params.isEmpty()) { flog.log("[CT CONFUSION] No params."); ScanState.end(scanHost); return 0; }
 
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
         int    baselineStatus = baseline.response() != null ? baseline.response().statusCode() : 0;
@@ -580,6 +625,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         String baselineBody   = baseline.response() != null ? baseline.response().bodyToString() : "";
 
         for (SmartBodyDetector.ParsedParam param : params) {
+            if (cancelRequested("CT CONFUSION")) return findings;
             for (String jsonPayload : PayloadDatabase.getContentTypeConfusionPayloads(param.name)) {
                 throttle();
                 HttpRequest confused = baseRR.request()
@@ -631,6 +677,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 }
             }
         }
+        ScanState.end(scanHost);
         flog.log("[CT CONFUSION] Completed.");
         if (!suppressSummaries && findings > 0)
             showScanSummary("Content-Type Confusion", baseRR.request().url(), findings);
@@ -643,12 +690,19 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private int runAggregationScan(HttpRequestResponse baseRR) {
         flog.log("\n[AGGREGATION] Starting → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[AGGREGATION] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return 0;
+        }
         int findings = 0;
 
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
         int baselineLen = baseline.response() != null ? baseline.response().body().length() : 0;
 
         for (String payload : PayloadDatabase.getAggregationPayloads()) {
+            if (cancelRequested("AGGREGATION")) return findings;
             throttle();
             HttpRequest modified = baseRR.request()
                 .withBody(payload)
@@ -685,6 +739,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 api.siteMap().add(rr);
             }
         }
+        ScanState.end(scanHost);
         flog.log("[AGGREGATION] Completed.");
         if (!suppressSummaries && findings > 0)
             showScanSummary("Aggregation Pipeline Injection", baseRR.request().url(), findings);
@@ -697,6 +752,12 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private int runMongooseBypass(HttpRequestResponse baseRR) {
         flog.log("\n[MONGOOSE CVE] Starting → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[MONGOOSE CVE] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return 0;
+        }
         int findings = 0;
 
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
@@ -708,6 +769,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         boolean errorLeadReported = false;
 
         for (String payload : PayloadDatabase.getMongooseBypassPayloads()) {
+            if (cancelRequested("MONGOOSE CVE")) return findings;
             throttle();
             HttpRequest modified = baseRR.request()
                 .withBody(payload)
@@ -776,6 +838,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 api.siteMap().add(rr);
             }
         }
+        ScanState.end(scanHost);
         flog.log("[MONGOOSE CVE] Completed.");
         if (!suppressSummaries && findings > 0)
             showScanSummary("Mongoose CVE-2025-23061", baseRR.request().url(), findings);
@@ -788,6 +851,12 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     private void runFullScan(HttpRequestResponse baseRR) {
         flog.log("\n[FULL SCAN] Starting all techniques → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[FULL SCAN] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return;
+        }
         suppressSummaries = true;
         int total = 0;
         total += runAuthBypass(baseRR, SmartBodyDetector.detect(baseRR.request()));
@@ -798,6 +867,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         total += runMongooseBypass(baseRR);
         total += runTimeScan(baseRR); // last (slowest)
         suppressSummaries = false;
+        ScanState.end(scanHost);
         flog.log("[FULL SCAN] All techniques completed.");
         if (total > 0)
             showScanSummary("Full Scan (all techniques)", baseRR.request().url(), total);
@@ -806,6 +876,19 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     // ─────────────────────────────────────────────────────────────
     // UTILITIES
     // ─────────────────────────────────────────────────────────────
+
+    /** Best-effort host extraction for the one-scan-per-host guard. */
+    private static String hostOf(String url) {
+        try { return new java.net.URI(url).getHost(); }
+        catch (Exception e) { return url; }
+    }
+
+    /** True if the user requested cancellation; logs the stop and returns once. */
+    private boolean cancelRequested(String scan) {
+        if (!ScanState.isCancelled()) return false;
+        flog.log("[" + scan + "] Cancelled by user — stopping this scan.");
+        return true;
+    }
 
     private String guessField(List<SmartBodyDetector.ParsedParam> params, String... candidates) {
         for (SmartBodyDetector.ParsedParam p : params)
