@@ -23,6 +23,14 @@ repositories {
 dependencies {
     // Burp Suite Montoya API (latest 2026)
     compileOnly 'net.portswigger.burp.extensions:montoya-api:2026.4'
+
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 // Build a fat JAR containing all dependencies
