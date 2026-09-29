@@ -109,14 +109,14 @@ public class NoSQLiTab {
         panel.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
 
         JLabel title = new JLabel("🔍 NoSQLi Hunter v" + NoSQLiScanner.VERSION);
-        title.setFont(new Font("Monospaced", Font.BOLD, 18));
+        title.setFont(new Font("Monospaced", Font.BOLD, 20));
         title.setForeground(new Color(50, 200, 100));
 
         JLabel subtitle = new JLabel(
             "  MongoDB · CouchDB · Operator Injection · JS Injection · Blind Boolean · " +
             "Time-Based · Auth Bypass · Content-Type Confusion · Mongoose CVE-2025-23061"
         );
-        subtitle.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        subtitle.setFont(new Font("SansSerif", Font.PLAIN, 13));
         subtitle.setForeground(new Color(150, 180, 220));
 
         JPanel titlePanel = new JPanel(new BorderLayout());
@@ -125,7 +125,7 @@ public class NoSQLiTab {
         titlePanel.add(subtitle, BorderLayout.SOUTH);
 
         JLabel status = new JLabel("  ● ACTIVE");
-        status.setFont(new Font("Monospaced", Font.BOLD, 12));
+        status.setFont(new Font("Monospaced", Font.BOLD, 13));
         status.setForeground(new Color(50, 220, 80));
 
         panel.add(titlePanel, BorderLayout.CENTER);
@@ -144,14 +144,14 @@ public class NoSQLiTab {
         table.setBackground(new Color(20, 25, 35));
         table.setForeground(new Color(200, 230, 255));
         table.setSelectionBackground(new Color(50, 90, 140));
-        table.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        table.setFont(new Font("Monospaced", Font.PLAIN, 13));
         table.getTableHeader().setBackground(new Color(35, 45, 60));
         table.getTableHeader().setForeground(new Color(100, 200, 100));
-        table.setRowHeight(22);
+        table.setRowHeight(26);
         table.setGridColor(new Color(50, 60, 75));
 
         // Column widths
-        int[] widths = {30, 60, 130, 70, 100, 200, 200, 250};
+        int[] widths = {35, 70, 150, 80, 120, 220, 220, 280};
         for (int i = 0; i < widths.length; i++) {
             table.getColumnModel().getColumn(i).setPreferredWidth(widths[i]);
         }
@@ -160,7 +160,7 @@ public class NoSQLiTab {
         table.setDefaultRenderer(Object.class, (tbl, value, isSelected, hasFocus, row, col) -> {
             JLabel label = new JLabel(value != null ? value.toString() : "");
             label.setOpaque(true);
-            label.setFont(new Font("Monospaced", Font.PLAIN, 11));
+            label.setFont(new Font("Monospaced", Font.PLAIN, 13));
 
             if (isSelected) {
                 label.setBackground(new Color(50, 90, 140));
@@ -186,7 +186,7 @@ public class NoSQLiTab {
             BorderFactory.createLineBorder(new Color(50, 200, 100)),
             "Findings (click row → Show Full Request)",
             TitledBorder.LEFT, TitledBorder.TOP,
-            new Font("Monospaced", Font.BOLD, 11),
+            new Font("Monospaced", Font.BOLD, 13),
             new Color(50, 200, 100)
         ));
         panel.add(scroll, BorderLayout.CENTER);
@@ -283,14 +283,14 @@ public class NoSQLiTab {
         JPanel dp = new JPanel(new BorderLayout(5, 5));
         dp.setBackground(new Color(20, 25, 35));
 
+        // Plain text: HTML markup renders as literal text inside Burp's UI
         JLabel info = new JLabel(
-            "<html><b style='color:#50c864'>Technique:</b> " + technique +
-            " &nbsp; <b style='color:#50c864'>Parameter:</b> " + param +
-            " &nbsp; <b style='color:#50c864'>Payload:</b> " + esc(truncate(payload, 80)) +
-            (redirectPath.isEmpty() ? "" : " &nbsp; <b style='color:#f0a010'>Redirect→</b> " + esc(redirectPath)) +
-            "</html>"
+            "Technique: " + technique + "    Parameter: " + param +
+            "    Payload: " + truncate(payload, 80) +
+            (redirectPath.isEmpty() ? "" : "    Redirect→ " + redirectPath)
         );
-        info.setForeground(Color.WHITE);
+        info.setFont(new Font("SansSerif", Font.BOLD, 13));
+        info.setForeground(new Color(80, 200, 100));
         info.setBorder(BorderFactory.createEmptyBorder(6, 10, 6, 10));
         dp.add(info, BorderLayout.NORTH);
 
@@ -298,7 +298,7 @@ public class NoSQLiTab {
         reqArea.setEditable(false);
         reqArea.setBackground(new Color(15, 20, 30));
         reqArea.setForeground(new Color(180, 255, 180));
-        reqArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        reqArea.setFont(new Font("Monospaced", Font.PLAIN, 14));
         reqArea.setCaretPosition(0);
         dp.add(new JScrollPane(reqArea), BorderLayout.CENTER);
 
@@ -322,7 +322,7 @@ public class NoSQLiTab {
         logArea.setEditable(false);
         logArea.setBackground(new Color(15, 20, 30));
         logArea.setForeground(new Color(180, 255, 180));
-        logArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        logArea.setFont(new Font("Monospaced", Font.PLAIN, 13));
         logArea.setText("[NoSQLi Hunter] Ready — use right-click menu or active scan.\n");
 
         JScrollPane sp = new JScrollPane(logArea);
@@ -330,7 +330,7 @@ public class NoSQLiTab {
             BorderFactory.createLineBorder(new Color(100, 200, 100)),
             "Live Log (all scan activity)",
             TitledBorder.LEFT, TitledBorder.TOP,
-            new Font("Monospaced", Font.BOLD, 11),
+            new Font("Monospaced", Font.BOLD, 13),
             new Color(100, 200, 100)
         ));
 
@@ -427,7 +427,7 @@ public class NoSQLiTab {
             BorderFactory.createLineBorder(new Color(50, 200, 100)),
             "Payload Reference (right-click any cell to copy)",
             TitledBorder.LEFT, TitledBorder.TOP,
-            new Font("Monospaced", Font.BOLD, 11),
+            new Font("Monospaced", Font.BOLD, 13),
             new Color(50, 200, 100)
         ));
         return sp;
@@ -442,10 +442,10 @@ public class NoSQLiTab {
         table.setBackground(new Color(25, 30, 40));
         table.setForeground(new Color(200, 230, 255));
         table.setSelectionBackground(new Color(50, 80, 120));
-        table.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        table.setFont(new Font("Monospaced", Font.PLAIN, 13));
         table.getTableHeader().setBackground(new Color(35, 45, 60));
         table.getTableHeader().setForeground(new Color(100, 200, 100));
-        table.setRowHeight(24);
+        table.setRowHeight(27);
         table.setGridColor(new Color(50, 60, 75));
 
         // Right-click → copy cell
@@ -476,7 +476,7 @@ public class NoSQLiTab {
         guide.setEditable(false);
         guide.setBackground(new Color(25, 30, 40));
         guide.setForeground(new Color(200, 220, 255));
-        guide.setFont(new Font("Monospaced", Font.PLAIN, 11));
+        guide.setFont(new Font("Monospaced", Font.PLAIN, 13));
         guide.setText(
             "╔════════════════════════════════════════════════════════════╗\n" +
             "║          NoSQLi Hunter — Testing Methodology               ║\n" +
@@ -538,7 +538,7 @@ public class NoSQLiTab {
             BorderFactory.createLineBorder(new Color(80, 80, 120)),
             "Configuration",
             TitledBorder.LEFT, TitledBorder.TOP,
-            new Font("SansSerif", Font.BOLD, 10),
+            new Font("SansSerif", Font.BOLD, 12),
             new Color(150, 160, 200)
         ));
 
@@ -548,7 +548,7 @@ public class NoSQLiTab {
             "Right-click requests for manual testing  |  Active scan auto-tests all params"
         );
         info.setForeground(new Color(140, 160, 200));
-        info.setFont(new Font("SansSerif", Font.PLAIN, 10));
+        info.setFont(new Font("SansSerif", Font.PLAIN, 12));
         panel.add(info);
         return panel;
     }
@@ -559,7 +559,7 @@ public class NoSQLiTab {
         JButton b = new JButton(text);
         b.setBackground(new Color(40, 50, 70));
         b.setForeground(new Color(180, 210, 255));
-        b.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        b.setFont(new Font("SansSerif", Font.PLAIN, 13));
         b.setFocusPainted(false);
         b.setBorder(BorderFactory.createLineBorder(new Color(70, 80, 110)));
         return b;

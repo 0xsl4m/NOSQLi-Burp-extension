@@ -135,6 +135,42 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         String baselinePath    = extractPath(baseline.response() != null
             ? baseline.response().headerValue("Location") : null);
 
+        // If the captured request is itself a VALID login (e.g. the user grabbed
+        // their own logged-in request), the baseline is already authenticated:
+        // every FAILED payload then looks like a "change" and gets reported as a
+        // bypass, while a real bypass looks identical to baseline. Re-baseline
+        // with a deliberately wrong password so the starting state is a known
+        // failure.
+        boolean baselineAuthed =
+            (isAuthSuccessPath(baselinePath) ||
+             containsAny(baselineBody, PayloadDatabase.AUTH_SUCCESS_KEYWORDS))
+            && !containsAny(baselineBody, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
+
+        SmartBodyDetector.ParsedParam passParam = null;
+        for (SmartBodyDetector.ParsedParam p : params) {
+            if (p.name.equals(passField)) { passParam = p; break; }
+        }
+
+        if (baselineAuthed && passParam != null) {
+            flog.log("[AUTH BYPASS] Baseline looks already logged-in (status=" + baselineStatus +
+                     ") — re-baselining with a wrong password");
+            // JSON bodies need the replacement value pre-quoted; urlencoded/GET
+            // take the bare string.
+            String wrongPw =
+                (passParam.bodyType == SmartBodyDetector.BodyType.JSON ||
+                 passParam.bodyType == SmartBodyDetector.BodyType.GRAPHQL)
+                ? "\"nosqli_wrong_password\""
+                : "nosqli_wrong_password";
+
+            baseline = api.http().sendRequest(
+                SmartBodyDetector.applyPayload(baseRR.request(), passParam, wrongPw));
+            baselineStatus = baseline.response() != null ? baseline.response().statusCode() : 0;
+            baselineBody   = baseline.response() != null ? baseline.response().bodyToString() : "";
+            baselinePath   = extractPath(baseline.response() != null
+                ? baseline.response().headerValue("Location") : null);
+            flog.log("[AUTH BYPASS] Failure baseline: status=" + baselineStatus);
+        }
+
         for (String payload : payloads) {
             HttpRequest modified = forceType == SmartBodyDetector.BodyType.JSON
                 ? baseRR.request().withBody(payload).withUpdatedHeader("Content-Type","application/json")
@@ -152,9 +188,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             boolean statusChanged   = (status != baselineStatus);
 
             // A status change alone is bypass evidence only when the payload
-            // response is success-class (e.g. 401→200). Non-2xx differences
-            // (400/500 from error handling) must not report a CRITICAL bypass.
-            boolean statusBypass    = statusChanged && status >= 200 && status < 300;
+            // response is success-class AND its body carries no failure text:
+            // most HTML login flows return 200 with "Invalid username or
+            // password" on failure, so a bare 2xx means nothing.
+            boolean statusBypass    = statusChanged && status >= 200 && status < 300
+                                   && !containsAny(body, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
 
             // Content-based: success keywords appeared OR failure keywords disappeared
             boolean successAppeared = containsAny(body, PayloadDatabase.AUTH_SUCCESS_KEYWORDS)
@@ -693,14 +731,26 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     }
 
     private void showNotification(String title, String url, String payload, String evidence) {
-        SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
-            null,
-            "<html><b>" + title + "</b><br>" +
-            "URL: " + url + "<br>" +
-            "Payload: <code>" + truncate(payload, 100) + "</code><br>" +
-            "Evidence: " + truncate(evidence, 120) + "</html>",
-            "⚠️ NoSQLi Hunter — Finding",
-            JOptionPane.WARNING_MESSAGE
-        ));
+        SwingUtilities.invokeLater(() -> {
+            // Plain JTextArea in a scroll pane: HTML labels render as literal
+            // markup inside Burp, and long URLs/payloads must wrap instead of
+            // stretching the dialog to infinity.
+            JTextArea area = new JTextArea();
+            area.setEditable(false);
+            area.setLineWrap(true);
+            area.setWrapStyleWord(true);
+            area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 14));
+            area.setText(title + "\n\n"
+                + "URL:      " + url + "\n\n"
+                + "Payload:  " + truncate(payload, 200) + "\n\n"
+                + "Evidence: " + truncate(evidence, 200));
+            area.setCaretPosition(0);
+
+            JScrollPane scroll = new JScrollPane(area);
+            scroll.setPreferredSize(new Dimension(720, 280));
+
+            JOptionPane.showMessageDialog(null, scroll,
+                "⚠️ NoSQLi Hunter — Finding", JOptionPane.WARNING_MESSAGE);
+        });
     }
 }
