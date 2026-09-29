@@ -588,8 +588,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     (interesting ? "   INTERESTING!" : ""));
 
                 if (interesting) {
+                    // A Content-Type flip changes response shape by itself, so
+                    // weak signals are only a lead; a DB error corroborates.
+                    String severity = hasError ? "HIGH" : "MEDIUM";
                     flog.reportFinding(new FindingsLogger.Finding(
-                        "CT-CONFUSION", "HIGH",
+                        "CT-CONFUSION", severity,
                         baseRR.request().url(),
                         param.name,
                         jsonPayload,
@@ -636,8 +639,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             flog.log("[AGGREGATION]   " + truncate(payload, 60) + " | " + evidence);
 
             if (bigResp || hasError) {
+                // Size drift alone is a lead; a DB error corroborates.
+                String severity = hasError ? "HIGH" : "MEDIUM";
                 flog.reportFinding(new FindingsLogger.Finding(
-                    "AGGREGATION", "HIGH",
+                    "AGGREGATION", severity,
                     baseRR.request().url(),
                     "body",
                     payload,
