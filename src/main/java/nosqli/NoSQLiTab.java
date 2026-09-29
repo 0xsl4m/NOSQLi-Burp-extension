@@ -111,6 +111,7 @@ public class NoSQLiTab {
         table.setFont(table.getFont().deriveFont(Font.PLAIN, UI_FONT_SIZE));
         table.setRowHeight(26);
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        table.setAutoCreateRowSorter(true);
         table.getColumnModel().getColumn(3).setCellRenderer(severityRenderer());
 
         int[] widths = {35, 70, 150, 80, 120, 220, 220, 280};
@@ -127,8 +128,14 @@ public class NoSQLiTab {
         JButton btnClear       = plainButton("Clear Findings");
         JButton btnExport      = plainButton("Export Findings");
 
+        // View-row -> model-row conversion: with a row sorter active,
+        // getSelectedRow() is the VIEW index while the parallel request lists
+        // are indexed by MODEL row.
+        java.util.function.IntUnaryOperator toModelRow = viewRow ->
+            viewRow < 0 ? -1 : table.convertRowIndexToModel(viewRow);
+
         btnShowReq.addActionListener(e -> {
-            int row = table.getSelectedRow();
+            int row = toModelRow.applyAsInt(table.getSelectedRow());
             if (row < 0) { showInfo("Select a finding row first."); return; }
             String fullReq = row < fullRequests.size() ? fullRequests.get(row) : "N/A";
             String path    = row < fullUrlPaths.size()  ? fullUrlPaths.get(row)  : "";
@@ -141,7 +148,7 @@ public class NoSQLiTab {
         });
 
         btnSendRepeater.addActionListener(e -> {
-            int row = table.getSelectedRow();
+            int row = toModelRow.applyAsInt(table.getSelectedRow());
             if (row < 0) { showInfo("Select a finding row first."); return; }
             String fullReq = row < fullRequests.size() ? fullRequests.get(row) : null;
             if (fullReq == null || fullReq.isEmpty()) { showInfo("No stored request for this finding."); return; }
@@ -153,13 +160,13 @@ public class NoSQLiTab {
         });
 
         btnCopyPayload.addActionListener(e -> {
-            int row = table.getSelectedRow();
+            int row = toModelRow.applyAsInt(table.getSelectedRow());
             if (row < 0) return;
             copyToClipboard((String) findingsModel.getValueAt(row, 5));
         });
 
         btnCopyUrl.addActionListener(e -> {
-            int row = table.getSelectedRow();
+            int row = toModelRow.applyAsInt(table.getSelectedRow());
             if (row < 0) return;
             copyToClipboard((String) findingsModel.getValueAt(row, 7));
         });
@@ -187,7 +194,7 @@ public class NoSQLiTab {
         table.addMouseListener(new java.awt.event.MouseAdapter() {
             public void mouseClicked(java.awt.event.MouseEvent ev) {
                 if (ev.getClickCount() == 2) {
-                    int row = table.getSelectedRow();
+                    int row = table.convertRowIndexToModel(table.rowAtPoint(ev.getPoint()));
                     if (row >= 0) {
                         String fullReq = row < fullRequests.size() ? fullRequests.get(row) : "N/A";
                         String path    = row < fullUrlPaths.size()  ? fullUrlPaths.get(row)  : "";
