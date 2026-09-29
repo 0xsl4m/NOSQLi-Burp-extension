@@ -126,9 +126,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
         flog.log("[AUTH BYPASS] Targeting fields: user=" + userField + ", pass=" + passField);
 
-        List<String> payloads = forceType == SmartBodyDetector.BodyType.JSON
-            ? PayloadDatabase.getAuthBypassJson(userField, passField)
-            : PayloadDatabase.getAuthBypassUrlEncoded(userField, passField);
+        List<PayloadDatabase.AuthBypassPair> payloads =
+            forceType == SmartBodyDetector.BodyType.JSON
+            ? PayloadDatabase.getAuthBypassJsonParts()
+            : PayloadDatabase.getAuthBypassUrlEncodedParts();
 
         // Baseline
         HttpRequestResponse baseline = api.http().sendRequest(baseRR.request());
@@ -148,9 +149,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
              containsAny(baselineBody, PayloadDatabase.AUTH_SUCCESS_KEYWORDS))
             && !containsAny(baselineBody, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
 
+        SmartBodyDetector.ParsedParam userParam = null;
         SmartBodyDetector.ParsedParam passParam = null;
         for (SmartBodyDetector.ParsedParam p : params) {
-            if (p.name.equals(passField)) { passParam = p; break; }
+            if (userParam == null && p.name.equals(userField)) userParam = p;
+            if (passParam == null && p.name.equals(passField)) passParam = p;
         }
 
         if (baselineAuthed && passParam != null) {
@@ -175,11 +178,17 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
         boolean errorLeadReported = false;
 
-        for (String payload : payloads) {
+        for (PayloadDatabase.AuthBypassPair pair : payloads) {
             throttle();
-            HttpRequest modified = forceType == SmartBodyDetector.BodyType.JSON
-                ? baseRR.request().withBody(payload).withUpdatedHeader("Content-Type","application/json")
-                : baseRR.request().withBody(payload);
+
+            // Rewrite ONLY the auth fields; every other field of the original
+            // body (CSRF tokens, session hints, extra parameters) survives.
+            HttpRequest modified = buildAuthBypassRequest(baseRR, forceType, pair,
+                userParam, passParam, userField, passField, params);
+
+            String payload = forceType == SmartBodyDetector.BodyType.JSON
+                ? "{\"" + userField + "\": " + pair.userPart + ", \"" + passField + "\": " + pair.passPart + "}"
+                : userField + pair.userPart + "&" + passField + pair.passPart;
 
             HttpRequestResponse rr = api.http().sendRequest(modified);
             if (rr.response() == null) continue;
@@ -755,6 +764,96 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             for (String c : candidates)
                 if (p.name.toLowerCase().contains(c.toLowerCase())) return p.name;
         return null;
+    }
+
+    /**
+     * Build one auth-bypass request by rewriting ONLY the auth fields.
+     *
+     * If the forced format matches the original body type, the original
+     * request is reused and just the user/pass parameters are replaced —
+     * CSRF tokens and every other field stay byte-for-byte. If a different
+     * format is forced (e.g. JSON operators on a urlencoded form), the body
+     * is rebuilt from the ORIGINAL parameters in the forced format, still
+     * preserving all non-auth fields.
+     */
+    private HttpRequest buildAuthBypassRequest(HttpRequestResponse baseRR,
+            SmartBodyDetector.BodyType forceType, PayloadDatabase.AuthBypassPair pair,
+            SmartBodyDetector.ParsedParam userParam, SmartBodyDetector.ParsedParam passParam,
+            String userField, String passField,
+            List<SmartBodyDetector.ParsedParam> params) {
+
+        boolean jsonTarget = forceType == SmartBodyDetector.BodyType.JSON;
+        boolean originalMatches = jsonTarget
+            ? (userParam != null && (userParam.bodyType == SmartBodyDetector.BodyType.JSON ||
+                                     userParam.bodyType == SmartBodyDetector.BodyType.GRAPHQL))
+            : (userParam != null && (userParam.bodyType == SmartBodyDetector.BodyType.URL_ENCODED ||
+                                     userParam.bodyType == SmartBodyDetector.BodyType.GET_PARAMS));
+
+        if (originalMatches) {
+            HttpRequest modified = baseRR.request();
+            if (jsonTarget) {
+                if (userParam != null)
+                    modified = SmartBodyDetector.applyOperatorPayload(modified, userParam, pair.userPart);
+                if (passParam != null)
+                    modified = SmartBodyDetector.applyOperatorPayload(modified, passParam, pair.passPart);
+            } else {
+                if (userParam != null)
+                    modified = SmartBodyDetector.applyOperatorPayload(modified, userParam, userField + pair.userPart);
+                if (passParam != null)
+                    modified = SmartBodyDetector.applyOperatorPayload(modified, passParam, passField + pair.passPart);
+            }
+            return modified;
+        }
+
+        if (jsonTarget) {
+            StringBuilder json = new StringBuilder("{");
+            boolean first = true;
+            for (SmartBodyDetector.ParsedParam p : params) {
+                if (!first) json.append(", ");
+                first = false;
+                String valuePart;
+                if (p.name.equals(userField))       valuePart = pair.userPart;
+                else if (p.name.equals(passField))  valuePart = pair.passPart;
+                else                                 valuePart = quoteJson(p.value);
+                json.append(quoteJson(p.name)).append(": ").append(valuePart);
+            }
+            json.append("}");
+            return baseRR.request().withBody(json.toString())
+                .withUpdatedHeader("Content-Type", "application/json");
+        }
+
+        StringBuilder body = new StringBuilder();
+        boolean first = true;
+        for (SmartBodyDetector.ParsedParam p : params) {
+            if (!first) body.append("&");
+            first = false;
+            String name = p.name;
+            String value = p.value;
+            if (p.name.equals(userField))      { name = userField + pairNameSuffix(pair.userPart);  value = pairValueSuffix(pair.userPart); }
+            else if (p.name.equals(passField)) { name = passField + pairNameSuffix(pair.passPart);  value = pairValueSuffix(pair.passPart); }
+            body.append(java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8))
+                .append('=')
+                .append(java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8));
+        }
+        return baseRR.request().withBody(body.toString())
+            .withUpdatedHeader("Content-Type", "application/x-www-form-urlencoded");
+    }
+
+    /** "[$ne]=x" → "[$ne]" ; "=admin" → "" */
+    private static String pairNameSuffix(String part) {
+        int eq = part.indexOf('=');
+        return eq > 0 ? part.substring(0, eq) : "";
+    }
+
+    /** "[$ne]=x" → "x" ; "=admin" → "admin" */
+    private static String pairValueSuffix(String part) {
+        int eq = part.indexOf('=');
+        return eq >= 0 ? part.substring(eq + 1) : part;
+    }
+
+    /** JSON string literal with escaping. */
+    private static String quoteJson(String s) {
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     private boolean containsAny(String text, String[] keywords) {
