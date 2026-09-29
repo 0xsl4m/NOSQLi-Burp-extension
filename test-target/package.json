@@ -1,0 +1,10 @@
+{
+  "name": "nosqli-hunter-test-target",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deliberately vulnerable NoSQL injection target for testing NoSQLi Hunter",
+  "dependencies": {
+    "express": "^4.19.2",
+    "mongodb": "^6.8.0"
+  }
+}
