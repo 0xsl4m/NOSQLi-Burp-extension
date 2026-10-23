@@ -19,6 +19,35 @@ Negative controls (must produce ZERO findings):
 - `httpbin.org/post` / `/get` echo endpoints — reflects payloads, not a Mongo app.
 - Any non-NoSQL login (e.g. the SQL injection authentication labs) via Auth Bypass.
 
+## T4.5 — v2.1.1 regression checks
+
+Each item below guards a bug fixed in v2.1.1; run them after any change to
+`ScanState`, the context-menu scan lifecycle, or the extraction builder.
+
+1. **Full Scan actually runs** — right-click → Full Scan on the
+   `/login-url` request from `test-target`. The log must show attempt
+   lines from EVERY technique (`[AUTH BYPASS] Attempt 1/10`, `[OPERATOR
+   SCAN] Testing parameter`, `[TIME-BASED] Baseline avg`, ...) and NOT a
+   single "A scan is already running" line.
+2. **Cancel releases the host** — start any scan, click Cancel Scan, then
+   immediately start the same scan again: it must begin (no 15-minute
+   lockout message).
+3. **Cancel stops the whole Full Scan** — cancel during the AUTH BYPASS
+   stage; the log must show `[AUTH BYPASS] Cancelled.`, `[FULL SCAN]
+   Cancelled — skipping the remaining techniques.` and NO later technique
+   starting up again.
+4. **$regex extraction on urlencoded** — run Extract Field Data on the
+   `/login-url` request (`administrator` / `s3cur3P@ss!` seeded): progress
+   lines must appear per character and end with
+   `DONE: password = s3cur3P@ss!`. (v2.1.0 sent the ORIGINAL request for
+   every probe on urlencoded bodies — oracle failed instantly.)
+5. **JS scan negative control** — run JavaScript Injection against
+   `httpbin.org/post`: zero findings (reflective echo only). Transient
+   diffs must log `diff not reproducible — skipped`.
+6. **CT confusion keeps CSRF** — run Content-Type Confusion on
+   `/login-json` (CSRF-protected): the sent requests must still carry the
+   original `csrf` field; a bare 403 must NOT be reported as a finding.
+
 ## T4 — Manual checklist
 
 Per body type (urlencoded / JSON / GET / GraphQL), run each attack from the

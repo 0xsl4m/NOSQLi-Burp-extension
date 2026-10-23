@@ -1,4 +1,4 @@
-# 🔍 NoSQLi Hunter - Burp Suite Extension v2.1.0
+# 🔍 NoSQLi Hunter - Burp Suite Extension v2.1.1
 
 > **Professional-grade NoSQL Injection scanner for Burp Suite Community & Pro**
 > Built for bug hunters with 15+ years of web app experience in mind.
@@ -96,15 +96,15 @@ nosqli-hunter/
 ```bash
 cd nosqli-burp-extension
 gradle buildExtension
-# Output: build/libs/nosqli-hunter-2.1.0.jar
+# Output: build/libs/nosqli-hunter-2.1.1.jar
 ```
 
 ### Install in Burp
 1. Open Burp Suite
 2. Go to **Extensions → Installed → Add**
 3. Extension Type: **Java**
-4. Extension file: select `nosqli-hunter-2.1.0.jar`
-5. Click **Next** — look for "NoSQLi Hunter v2.1.0 - Loaded" in the Output tab
+4. Extension file: select `nosqli-hunter-2.1.1.jar`
+5. Click **Next** — look for "NoSQLi Hunter v2.1.1 - Loaded" in the Output tab
 
 > **Burp Community users:** the right-click attack menu and the NoSQLi Hunter
 > tab work fully on Community. Only the automated active/passive auditing
