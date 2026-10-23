@@ -68,4 +68,31 @@ public class ScanStateTest {
         ScanState.cancel();
         assertTrue(a.cancelled());
     }
+
+    @Test
+    void hostInterleavingCannotDoubleBookAHost() {
+        // A → B → A used to be admitted with the old single-slot guard:
+        // starting host B overwrote the slot, freeing host A while its
+        // scan still ran. The per-host map must keep A locked throughout.
+        ScanState.Handle a1 = ScanState.tryBegin("a.example");
+        assertNotNull(a1);
+        assertNotNull(ScanState.tryBegin("b.example"));
+        assertNull(ScanState.tryBegin("a.example"),
+            "a scan on another host must never unlock a busy host");
+
+        // ending the B scan must not release A either
+        ScanState.Handle b = ScanState.tryBegin("c.example"); // slot juggling is gone; still busy:
+        assertNotNull(b);
+        ScanState.end(b);
+        assertNull(ScanState.tryBegin("a.example"));
+    }
+
+    @Test
+    void endOnlyReleasesItsOwnHost() {
+        ScanState.Handle a = ScanState.tryBegin("a.example");
+        ScanState.Handle b = ScanState.tryBegin("b.example");
+        ScanState.end(a);
+        assertNotNull(ScanState.tryBegin("a.example"), "A released");
+        assertNull(ScanState.tryBegin("b.example"), "B must stay locked until its own end()");
+    }
 }
