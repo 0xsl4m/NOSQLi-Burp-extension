@@ -64,7 +64,9 @@ public class SmartBodyDetector {
             if (body.startsWith("{") || body.startsWith("[")) {
                 return BodyType.JSON;
             }
-            if (body.contains("=") && body.contains("&")) {
+            if (body.contains("=")) {
+                // A single "user=admin" pair (no &) is still urlencoded —
+                // requiring '&' missed one-field bodies entirely.
                 return BodyType.URL_ENCODED;
             }
             if (request.method().equalsIgnoreCase("GET")) {
@@ -146,6 +148,14 @@ public class SmartBodyDetector {
         String body = request.bodyToString();
         if (body == null || body.isEmpty()) return;
         for (JsonWalker.Leaf leaf : JsonWalker.leaves(body)) {
+            // GraphQL: the query text and operationName are DOCUMENT fields,
+            // not data — injecting operators into them just breaks every
+            // request (400 on both sides of each pair = pure noise). Only
+            // the variables (and any other data leaves) are injectable.
+            if (bodyType == BodyType.GRAPHQL
+                    && (leaf.key.equals("query") || leaf.key.equals("operationName"))) {
+                continue;
+            }
             result.add(new ParsedParam(
                 leaf.key, leaf.raw, leaf.start, leaf.end, bodyType, HttpParameterType.BODY));
         }
@@ -226,6 +236,17 @@ public class SmartBodyDetector {
                 return applyJsonPayload(originalRequest, param, payloadValue);
             case GET_PARAMS:
                 return applyGetParamPayload(originalRequest, param, payloadValue);
+            case MULTIPART:
+                // Structured rewrite via the parsed parameter — the old
+                // body.replace(value, payload) corrupted the raw multipart
+                // text (boundary digits, adjacent parts) whenever the value
+                // was a short/common string.
+                try {
+                    return originalRequest.withUpdatedParameters(
+                        HttpParameter.parameter(param.name, payloadValue, param.paramType));
+                } catch (Exception e) {
+                    return originalRequest;
+                }
             default:
                 return applyRawReplacePayload(originalRequest, param, payloadValue);
         }

@@ -123,4 +123,18 @@ public class FindingsLogger {
         findings.clear();
         seenKeys.clear();
     }
+
+    /**
+     * Extension unload: the singleton outlives the extension class loader's
+     * users — without this, a reload kept feeding the PREVIOUS tab's dead
+     * Swing listeners (leak + duplicated state) and the old dedup keys
+     * suppressed the new session's findings as "duplicates".
+     */
+    public synchronized void reset() {
+        findings.clear();
+        seenKeys.clear();
+        listeners.clear();
+        logListeners.clear();
+        burpLog = null;
+    }
 }

@@ -29,13 +29,14 @@ Each item below guards a bug fixed in v2.1.1; run them after any change to
    lines from EVERY technique (`[AUTH BYPASS] Attempt 1/10`, `[OPERATOR
    SCAN] Testing parameter`, `[TIME-BASED] Baseline avg`, ...) and NOT a
    single "A scan is already running" line.
-2. **Cancel releases the host** — start any scan, click Cancel Scan, then
-   immediately start the same scan again: it must begin (no 15-minute
-   lockout message).
+2. **Cancel releases the host** — start any scan, click Cancel Scan, wait
+   for the `Cancelled.` log line, then start the same scan again: it must
+   begin (no 15-minute lockout message; the guard frees when the scan
+   thread notices the cancel, not at the click itself).
 3. **Cancel stops the whole Full Scan** — cancel during the AUTH BYPASS
    stage; the log must show `[AUTH BYPASS] Cancelled.`, `[FULL SCAN]
    Cancelled — skipping the remaining techniques.` and NO later technique
-   starting up again.
+   starting up again — and NO completion summary popup.
 4. **$regex extraction on urlencoded** — run Extract Field Data on the
    `/login-url` request (`administrator` / `s3cur3P@ss!` seeded): progress
    lines must appear per character and end with
@@ -44,9 +45,23 @@ Each item below guards a bug fixed in v2.1.1; run them after any change to
 5. **JS scan negative control** — run JavaScript Injection against
    `httpbin.org/post`: zero findings (reflective echo only). Transient
    diffs must log `diff not reproducible — skipped`.
-6. **CT confusion keeps CSRF** — run Content-Type Confusion on
-   `/login-json` (CSRF-protected): the sent requests must still carry the
-   original `csrf` field; a bare 403 must NOT be reported as a finding.
+6. **CT confusion keeps CSRF and stays in scope** — run Content-Type
+   Confusion on `/login-url` (urlencoded): sent requests carry every
+   original field. On a GET or JSON request the parameters must be SKIPPED
+   with a log line (the technique upgrades urlencoded bodies only —
+   probing GET params manufactured guaranteed diffs).
+7. **Evidence tiers** — a response that merely lost the failure text
+   (different validation wording, status < 400) reports as MEDIUM
+   `AUTH-BYPASS-LEAD`, never CRITICAL; CRITICAL requires positive evidence
+   (success keywords / success-path redirect / 2xx status change).
+8. **Mongoose CVE keeps CSRF** — run it on `/login-json` (CSRF-protected):
+   requests must carry the original `csrf` + credential fields with the
+   `$or`/`$where` keys merged alongside (whole-body replacement used to
+   403 before reaching Mongoose).
+9. **Reload hygiene** — unload + reload the extension: no duplicate log
+   lines in the tab (old listeners are dropped), and re-running the same
+   scan reports findings instead of "Duplicate suppressed" from the
+   previous session.
 
 ## T4 — Manual checklist
 

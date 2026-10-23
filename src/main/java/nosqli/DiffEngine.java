@@ -20,9 +20,14 @@ public final class DiffEngine {
 
     private DiffEngine() {}
 
-    /** name[=:]value forms of fields that change on every request/response. */
+    /**
+     * name[=:]value forms of fields that change on every request/response.
+     * The lookbehind anchors the field-name alternatives to a word start:
+     * without it "ts" matched inside "credits"/"details" and masked genuine
+     * differences between the two sides of a pair.
+     */
     private static final Pattern DYNAMIC_FIELD = Pattern.compile(
-        "(?i)((?:csrf[-_a-z]*|_?token|authenticity_token|xsrf[-_a-z]*|nonce|state|"
+        "(?i)(?<!\\w)((?:csrf[-_a-z]*|_?token|authenticity_token|xsrf[-_a-z]*|nonce|state|"
         + "ts|timestamp|request[_-]?id|session_state|viewstate)[\\w.\\-]*\\s*[=:]\\s*)"
         + "(\"[^\"]{6,}\"|[A-Za-z0-9+/=_\\-]{6,})");
 

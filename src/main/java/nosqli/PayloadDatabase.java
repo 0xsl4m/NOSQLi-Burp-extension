@@ -103,8 +103,10 @@ public class PayloadDatabase {
         "document failed validation",
         "invalid operator",
         "unknown operator",
-        "json: cannot unmarshal",
-        "ValidationError"
+        "json: cannot unmarshal"
+        // NOTE: no "ValidationError" here — ordinary (non-Mongo) JSON-schema
+        // validators use that exact word in baseline-less contexts (passive
+        // audit); the loose list still carries it WITH baseline gating.
     };
 
     /**
@@ -381,12 +383,11 @@ public class PayloadDatabase {
             "1==2",
             "JS numeric equality"
         ));
-        // URL-encoded variants
-        pairs.add(new JsPair(
-            "%27%20%7C%7C%20%271%27%3D%3D%271",
-            "%27%20%7C%7C%20%271%27%3D%3D%272",
-            "URL-encoded JS OR"
-        ));
+        // NOTE: no pre-URL-encoded variants — every application path
+        // (withUpdatedParameters / insertion points) re-encodes values, so
+        // "%27" reached the server as literal "%2527" text: two wasted
+        // requests per parameter that could never work. The raw variants
+        // above get encoded properly on the way out.
 
         return pairs;
     }
@@ -439,14 +440,6 @@ public class PayloadDatabase {
             3000,
             "MongoDB $where function time delay (3s)",
             BODY_JSON
-        ));
-
-        // URL-encoded JS time
-        payloads.add(new TimedPayload(
-            "%27%3Bvar%20t%3Dnew%20Date()%3Bdo%7B%7Dwhile(new%20Date()-t%3C3000)%3Bvar%20x%3D%27",
-            3000,
-            "MongoDB URL-encoded JS time delay (3s)",
-            BODY_URLENCODED
         ));
 
         return payloads;

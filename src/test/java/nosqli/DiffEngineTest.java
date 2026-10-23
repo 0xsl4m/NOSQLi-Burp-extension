@@ -26,6 +26,19 @@ public class DiffEngineTest {
     }
 
     @Test
+    void dynamicFieldMaskingIsAnchoredToWordStart() {
+        // "ts"/"state" as SUBSTRINGS of ordinary field names must not mask
+        // their values — that erased real boolean differences.
+        String body1 = "details: invalid credentials entered";
+        String body2 = "details: welcome back you are logged in";
+        assertFalse(DiffEngine.normalize(body1, null).contains("MASKED"));
+        assertFalse(DiffEngine.normalize(body2, null).contains("MASKED"));
+        assertFalse(DiffEngine.normalize("credits: 123456", null).contains("MASKED"));
+        // a REAL ts= field is still masked
+        assertTrue(DiffEngine.normalize("ts: 1700000000000x", null).contains("MASKED"));
+    }
+
+    @Test
     void normalizeMasksEpochTimestamps() {
         String out = DiffEngine.normalize("ts=1700000000000", null);
         assertFalse(out.contains("1700000000000"));

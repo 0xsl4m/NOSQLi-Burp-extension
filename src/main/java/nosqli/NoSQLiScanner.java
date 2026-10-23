@@ -60,12 +60,15 @@ public class NoSQLiScanner implements BurpExtension {
         contextMenu = new NoSQLiContextMenu(api);
         api.userInterface().registerContextMenuItemsProvider(contextMenu);
 
-        // 5. On unload: cancel running scans and stop the worker pool so no
-        //    thread keeps firing requests after the extension is gone.
+        // 5. On unload: cancel running scans, stop the worker pool so no
+        //    thread keeps firing requests after the extension is gone, and
+        //    drop the logger's listeners/state (a reload must not feed the
+        //    dead tab or inherit its dedup keys).
         api.extension().registerUnloadingHandler(() -> {
+            FindingsLogger.getInstance().log("[NoSQLi] Extension unloaded — scans cancelled.");
             contextMenu.shutdown();
             ScanState.reset();
-            FindingsLogger.getInstance().log("[NoSQLi] Extension unloaded — scans cancelled.");
+            FindingsLogger.getInstance().reset();
         });
 
         // 6. Active/passive scanner check — the Scanner API is
