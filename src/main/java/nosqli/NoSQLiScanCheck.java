@@ -12,6 +12,7 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity;
 import burp.api.montoya.scanner.AuditResult;
 import burp.api.montoya.scanner.ConsolidationAction;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -52,8 +53,7 @@ public class NoSQLiScanCheck implements ScanCheck {
         if (e != null) { issues.add(e); return auditResult(issues); }
 
         // Stage 2 — Boolean
-        AuditIssue b = runBooleanDetection(baseRR, insertionPoint, baselineLen,
-                                            baselineBody, baselinePath);
+        AuditIssue b = runBooleanDetection(baseRR, insertionPoint, baselineLen, baselinePath);
         if (b != null) { issues.add(b); return auditResult(issues); }
 
         // Stage 3 — Time
@@ -107,7 +107,7 @@ public class NoSQLiScanCheck implements ScanCheck {
         for (String c : PayloadDatabase.ERROR_DETECTION_CHARS) {
             throttle();
             HttpRequest req = pt.buildHttpRequestWithPayload(
-                burp.api.montoya.core.ByteArray.byteArray(c.getBytes()));
+                burp.api.montoya.core.ByteArray.byteArray(c.getBytes(StandardCharsets.UTF_8)));
             HttpRequestResponse rr = api.http().sendRequest(req.withService(baseRR.httpService()));
             if (rr.response() == null) continue;
 
@@ -169,7 +169,7 @@ public class NoSQLiScanCheck implements ScanCheck {
     // ─── STAGE 2: BOOLEAN ────────────────────────────────────────
 
     private AuditIssue runBooleanDetection(HttpRequestResponse baseRR,
-            AuditInsertionPoint pt, int baselineLen, String baselineBody, String baselinePath) {
+            AuditInsertionPoint pt, int baselineLen, String baselinePath) {
 
         // Operator injection changes the parameter NAME (user[$ne]=x), but an
         // AuditInsertionPoint only replaces the parameter VALUE and applies its
@@ -204,8 +204,6 @@ public class NoSQLiScanCheck implements ScanCheck {
         HttpRequestResponse trueEv = null, falseEv = null;
         HttpRequest bestReq = null;
 
-        String normBaseline = DiffEngine.normalize(baselineBody, null);
-
         for (PayloadDatabase.BooleanPair pair : pairs) {
             throttle();
             HttpRequest trueReq = SmartBodyDetector.applyOperatorPayload(
@@ -223,29 +221,33 @@ public class NoSQLiScanCheck implements ScanCheck {
             String truePath  = extractPath(trueRR.response().headerValue("Location"));
             String falsePath = extractPath(falseRR.response().headerValue("Location"));
 
-            // Compare normalized bodies: strip the reflected payload and
+            // Compare normalized bodies: strip the reflected payload (pair
+            // AND bare value — reflective pages echo the value only) and
             // dynamic per-response content so only real behavior differs.
-            String normTrue  = DiffEngine.normalize(trueRR.response().bodyToString(), pair.truePayload);
-            String normFalse = DiffEngine.normalize(falseRR.response().bodyToString(), pair.falsePayload);
+            String normTrue  = DiffEngine.normalize(trueRR.response().bodyToString(),
+                pair.truePayload, DiffEngine.valuePartOf(pair.truePayload));
+            String normFalse = DiffEngine.normalize(falseRR.response().bodyToString(),
+                pair.falsePayload, DiffEngine.valuePartOf(pair.falsePayload));
             DiffEngine.Signals sig = DiffEngine.evaluate(
                 trueStatus != falseStatus,
                 normTrue.length(), normFalse.length(),
                 normTrue, normFalse, truePath, falsePath);
 
-            // TRUE must sit closer to the normalized baseline than FALSE does.
-            boolean trueCloser =
-                Math.abs(normTrue.length() - normBaseline.length()) <=
-                Math.abs(normFalse.length() - normBaseline.length());
-
-            if (sig.any() && trueCloser) {
+            // No TRUE-closer-to-baseline requirement here (the manual scan
+            // never had one): on login endpoints the baseline is a FAILED
+            // login, so a successful bypass is the side FARTHER from the
+            // baseline. 2+ agreeing pairs + resend stability carry the FP load.
+            if (sig.any()) {
                 // Stability check: a real differential reproduces on resend.
                 throttle();
                 HttpRequestResponse trueRR2  = api.http().sendRequest(trueReq);
                 HttpRequestResponse falseRR2 = api.http().sendRequest(falseReq);
                 boolean stable = false;
                 if (trueRR2.response() != null && falseRR2.response() != null) {
-                    String t2 = DiffEngine.normalize(trueRR2.response().bodyToString(), pair.truePayload);
-                    String f2 = DiffEngine.normalize(falseRR2.response().bodyToString(), pair.falsePayload);
+                    String t2 = DiffEngine.normalize(trueRR2.response().bodyToString(),
+                        pair.truePayload, DiffEngine.valuePartOf(pair.truePayload));
+                    String f2 = DiffEngine.normalize(falseRR2.response().bodyToString(),
+                        pair.falsePayload, DiffEngine.valuePartOf(pair.falsePayload));
                     DiffEngine.Signals sig2 = DiffEngine.evaluate(
                         trueRR2.response().statusCode() != falseRR2.response().statusCode(),
                         t2.length(), f2.length(), t2, f2,
@@ -302,7 +304,7 @@ public class NoSQLiScanCheck implements ScanCheck {
         for (PayloadDatabase.TimedPayload tp : PayloadDatabase.getTimeBasedPayloads()) {
             throttle();
             HttpRequest req = pt.buildHttpRequestWithPayload(
-                burp.api.montoya.core.ByteArray.byteArray(tp.payload.getBytes()))
+                burp.api.montoya.core.ByteArray.byteArray(tp.payload.getBytes(StandardCharsets.UTF_8)))
                 .withService(baseRR.httpService());
 
             long s = System.currentTimeMillis();

