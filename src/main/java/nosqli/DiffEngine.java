@@ -40,17 +40,41 @@ public final class DiffEngine {
      * (raw and URL-encoded) and mask dynamic per-response fields.
      */
     public static String normalize(String body, String injectedValue) {
+        return normalize(body, injectedValue, null);
+    }
+
+    /**
+     * Normalize with a second strippable value. Operator pair payloads are
+     * full "name[$op]=value" strings, but a reflective page echoes only the
+     * VALUE part — pass both so a reflected value can never fake a size
+     * difference between the TRUE and FALSE sides.
+     */
+    public static String normalize(String body, String injectedValue, String injectedValue2) {
         if (body == null) return "";
-        String out = body;
-        if (injectedValue != null && !injectedValue.isEmpty()) {
-            out = out.replace(injectedValue, "");
-            String enc = urlEncode(injectedValue);
-            if (!enc.equals(injectedValue)) out = out.replace(enc, "");
-        }
+        String out = stripValue(body, injectedValue);
+        out = stripValue(out, injectedValue2);
         out = DYNAMIC_HTML_FIELD.matcher(out).replaceAll("$1MASKED");
         out = DYNAMIC_FIELD.matcher(out).replaceAll("$1MASKED");
         out = EPOCH_MS.matcher(out).replaceAll("MASKED");
         return out;
+    }
+
+    private static String stripValue(String body, String value) {
+        if (value == null || value.isEmpty()) return body;
+        String out = body.replace(value, "");
+        String enc = urlEncode(value);
+        if (!enc.equals(value)) out = out.replace(enc, "");
+        return out;
+    }
+
+    /**
+     * For pair payloads like "user[$ne]=x", the value portion "x" a
+     * reflective page would echo. Payloads without '=' pass through.
+     */
+    public static String valuePartOf(String pairPayload) {
+        if (pairPayload == null) return null;
+        int eq = pairPayload.indexOf('=');
+        return eq >= 0 ? pairPayload.substring(eq + 1) : pairPayload;
     }
 
     /** Signals measured between a TRUE and a FALSE response. */

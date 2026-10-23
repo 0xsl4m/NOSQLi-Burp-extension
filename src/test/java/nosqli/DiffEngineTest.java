@@ -33,6 +33,27 @@ public class DiffEngineTest {
     }
 
     @Test
+    void normalizeStripsPairValuePart() {
+        // Reflective page echoing only the VALUE of an operator pair: the
+        // full pair string is not present, so the value part must be
+        // stripped via the second argument or TRUE/FALSE sizes fake a diff.
+        String body = "Results for: ^impossible_xyz_no_match_12345$ | done";
+        String out = DiffEngine.normalize(body,
+            "filter[$regex]=^impossible_xyz_no_match_12345$",
+            DiffEngine.valuePartOf("filter[$regex]=^impossible_xyz_no_match_12345$"));
+        assertEquals("Results for:  | done", out);
+    }
+
+    @Test
+    void valuePartOfSplitsAtFirstEquals() {
+        assertEquals("nosqlhunter_x", DiffEngine.valuePartOf("user[$ne]=nosqlhunter_x"));
+        assertEquals("", DiffEngine.valuePartOf("user[$gt]="));
+        // JSON pair payloads (no '=') pass through untouched
+        assertEquals("{\"$ne\": \"x\"}", DiffEngine.valuePartOf("{\"$ne\": \"x\"}"));
+        assertNull(DiffEngine.valuePartOf(null));
+    }
+
+    @Test
     void sizeDiffThreshold() {
         assertTrue(DiffEngine.isSignificantDiff(1000, 1200));   // ~18%
         assertFalse(DiffEngine.isSignificantDiff(1000, 1100));  // ~9.5%
