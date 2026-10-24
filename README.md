@@ -29,9 +29,10 @@ Automatically detects and handles all request formats:
 | **Time-Based SSJS** | JavaScript `while(new Date()-t<3000)` delay | Low — 2 confirmations |
 | **Auth Bypass** | `$ne null`, `$gt ""`, `$regex .*` on login forms | N/A — Manual verification |
 | **Operator Injection** | All MongoDB operators: `$ne,$gt,$lt,$gte,$lte,$in,$nin,$regex,$exists,$type,$where` | Low |
-| **Content-Type Confusion** | Switch urlencoded→JSON to bypass operator filtering | Low |
-| **Aggregation Pipeline** | `$lookup`, `$unionWith` to access other collections | Low |
-| **Mongoose CVE-2025-23061** | `$where` nested under `$or` to bypass sanitizeFilter | N/A |
+| **Content-Type Confusion** | Upgrade urlencoded→JSON to bypass operator filtering (urlencoded bodies only) | Low |
+| **Aggregation Pipeline** | `$lookup`, `$unionWith` to access other collections (read-only — `$out` is never sent) | Low |
+| **Mongoose CVE-2025-23061** | `$where` nested under `$or` to bypass sanitizeFilter, merged alongside the original fields | N/A |
+| **Data Extraction** | Opt-in `$regex` prefix search — extracts a password char-by-char (urlencoded + JSON) | N/A — opt-in, cancellable |
 
 ### 🚫 False Positive Prevention Strategy
 
@@ -41,11 +42,15 @@ Error signatures must appear in the injected response but NOT in the baseline re
 **Stage 2 — Boolean Detection:**
 - Requires **2+ independent payload pairs** to show consistent differential behavior
 - Threshold: >15% response size/content difference
-- TRUE payload must match baseline behavior more than FALSE payload
+- The differential must **reproduce on resend** — one-shot diffs are skipped
+- Bodies are normalized first: the reflected payload (pair and bare value)
+  and per-request tokens (CSRF/nonces/timestamps) are stripped, so only
+  real behavior differs
 
 **Stage 3 — Time-Based:**
 - Measured elapsed time must be ≥ 2500ms
-- Must be ≥ 2.5× baseline average (3 samples)
+- Must exceed the baseline average (3 samples) by ≥ 2000ms — slow endpoints
+  (baseline > 2s) stay testable instead of being mathematically undetectable
 - Confirmed with a **second independent request** before reporting
 
 **Passive Audit:**
@@ -55,10 +60,20 @@ MongoDB-backed site — including the word "MongoDB" itself — are deliberately
 excluded, so describing your stack or sending an `X-Powered-By` header will not
 create a finding.
 
+**Reporting tiers:**
+A CRITICAL finding means positive evidence of success — success keywords, an
+auth-success redirect, or a success status change. Weaker signals are reported
+as MEDIUM **leads** instead: the failure text merely disappearing on an
+operator payload (`AUTH-BYPASS-LEAD` — often just different validation
+wording), or a healthy endpoint erroring on operator payloads
+(`OPERATOR-ERROR` — the operators reached the query). Verify leads manually in
+Repeater before reporting anything.
+
 ### ⚠️ Scan Load Awareness
 
-One active-scan insertion point costs up to ~38 requests (11 error-based +
-12 boolean + ~15 time-based including baseline and confirmations), with a
+One active-scan insertion point costs up to ~50 requests (11 error-based +
+up to 24 boolean including stability resends + up to 19 time-based including
+baseline and confirmations), with a
 150 ms pause between requests. The time-based payloads, when they execute,
 burn ~3 s of server-side CPU per request. On targets with many parameters this
 is real load — scope your scans and respect the engagement's rate limits.
@@ -77,7 +92,14 @@ nosqli-hunter/
 │   ├── SmartBodyDetector.java  # Body type detection & parameter extraction
 │   ├── NoSQLiScanCheck.java    # Core detection engine (active+passive scan)
 │   ├── NoSQLiContextMenu.java  # Right-click manual attack menu
-│   └── NoSQLiTab.java          # Burp Suite UI tab
+│   ├── NoSQLiTab.java          # Burp Suite UI tab (findings, log, cheatsheet)
+│   ├── DiffEngine.java         # Differential analysis + response normalization
+│   ├── JsonWalker.java         # Zero-dependency JSON leaf walker
+│   ├── ScanState.java          # Per-host scan locks + cancellation
+│   └── FindingsLogger.java     # Shared findings/log bus (scans + tab)
+├── src/test/java/nosqli/       # JUnit 5: DiffEngine, JsonWalker, ScanState
+├── test-target/                # Local vulnerable Node+Mongo app (docker compose)
+├── TESTING.md                  # Lab regression list + manual checklist
 ├── build.gradle
 ├── settings.gradle
 └── README.md
@@ -97,6 +119,9 @@ nosqli-hunter/
 cd nosqli-burp-extension
 gradle buildExtension
 # Output: build/libs/nosqli-hunter-2.1.1.jar
+
+# Run the JUnit suite (pure detection logic, no Burp needed)
+gradle test
 ```
 
 ### Install in Burp
@@ -128,18 +153,22 @@ Right-click any request in HTTP history, Repeater, or Target:
 🔍 NoSQLi Hunter
 ├── 📋 Body Type: [detected type]
 ├── 🔓 Authentication Bypass
-│   ├── URL-Encoded ($ne, $gt, $regex)
+│   ├── URL-Encoded ($ne, $gt, $regex, $nin, $in, $exists)
 │   └── JSON Operator Bypass
 ├── ⚙️ Operator Injection Scan
 ├── 💻 JavaScript Injection ($where)
+├── 🔎 Extract Field Data ($regex, opt-in)
 ├── ⏱️ Time-Based Blind (3s delay)
-├── 🔄 Content-Type Confusion (→ JSON ops)
+├── 🔄 Content-Type Confusion (→ JSON ops, urlencoded only)
 ├── 🗄️ Aggregation Pipeline Injection
+├── 🐍 Mongoose CVE-2025-23061 ($where via $or)
 └── 🚀 Full NoSQL Injection Scan (All Techniques)
 ```
 
 ### Method 3: Passive Scan
-The extension passively monitors all responses for MongoDB/CouchDB error leakage in proxy history.
+The extension passively monitors proxied responses for unambiguous MongoDB
+error leakage. (CouchDB signatures are checked in the active error stage,
+where a baseline response exists for comparison.)
 
 ---
 
@@ -221,12 +250,17 @@ baseline = send(original_request)
 for each (true_payload, false_payload) pair:
     true_resp  = send(inject(true_payload))
     false_resp = send(inject(false_payload))
-    
-    size_diff   = |true_len - false_len| / avg > 15%
-    status_diff = true_status != false_status
-    
-    if (size_diff OR status_diff) AND (true closer to baseline):
-        confirmed_count++
+
+    # normalize both bodies first: strip the reflected payload
+    # (pair AND bare value) + dynamic tokens (csrf/nonce/timestamps)
+    size_diff    = |true_len - false_len| / avg > 15%
+    status_diff  = true_status != false_status
+    path_diff    = redirect paths differ
+    keyword_diff = auth keywords flip sides
+
+    if (size_diff OR status_diff OR path_diff OR keyword_diff):
+        resend both sides — the differential must reproduce
+        if reproduced: confirmed_count++
 
 if confirmed_count >= 2:
     REPORT (FIRM confidence)
@@ -238,11 +272,12 @@ baseline = avg(3 × send(original_request)) in ms
 
 for each time_payload:
     elapsed = time(send(inject(payload)))
-    
-    if elapsed >= 2500ms AND elapsed >= baseline × 2.5:
+
+    # baseline-aware: the sleep adds ~3s ON TOP of normal latency
+    if elapsed >= 2500ms AND (elapsed - baseline) >= 2000ms:
         confirm_elapsed = time(send(inject(payload)))  # second shot
-        
-        if confirm_elapsed >= 2500ms:
+
+        if confirm_elapsed >= 2500ms AND (confirm_elapsed - baseline) >= 2000ms:
             REPORT (FIRM confidence)
 ```
 
@@ -280,4 +315,3 @@ The authors are not responsible for misuse.
 ---
 
 *Built with ❤️ for the security community — by bug hunters, for bug hunters.*
-# NOSQLi-Burp-extension
